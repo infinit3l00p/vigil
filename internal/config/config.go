@@ -1,0 +1,98 @@
+package config
+
+import (
+	"time"
+
+	"github.com/BurntSushi/toml"
+)
+
+// Config holds all VIGIL configuration.
+type Config struct {
+	Modules           ModulesConfig
+	LearnDuration     time.Duration `toml:"learn_duration"`
+	DetectionInterval time.Duration `toml:"detection_interval"`
+	SampleRate        int           `toml:"sample_rate"`
+	ConsecutiveHits   int           `toml:"consecutive_hits"`
+	MinShiftPercent   float64       `toml:"min_shift_percent"` // Minimum timing shift (%) for CRITICAL alerts
+	DashboardAddr     string        `toml:"dashboard_addr"`
+	AuthToken         string        `toml:"auth_token"`
+	AlertMaxEntries   int           `toml:"max_entries"`
+}
+
+// ModulesConfig controls which VIGIL modules are enabled.
+type ModulesConfig struct {
+	TemporalAnomaly    bool `toml:"temporal_anomaly"`
+	SyscallArgFilter   bool `toml:"syscall_arg_filter"`
+	CrossView          bool `toml:"cross_view"`
+	ProcessLineage     bool `toml:"process_lineage"`
+	SelfIntegrity      bool `toml:"self_integrity"`
+	BehavioralClustering bool `toml:"behavioral_clustering"`
+	DNSExfiltration    bool `toml:"dns_exfiltration"`
+	ContainerEscape    bool `toml:"container_escape"`
+	TTYSurveillance    bool `toml:"tty_surveillance"`
+	NetworkFlow        bool `toml:"network_flow"`
+}
+
+// DefaultConfig returns the default VIGIL configuration.
+func DefaultConfig() *Config {
+	return &Config{
+		Modules: ModulesConfig{
+			TemporalAnomaly:    true,
+			SyscallArgFilter:   true,
+			CrossView:          true,
+			ProcessLineage:     true,
+			SelfIntegrity:      true,
+			BehavioralClustering: true,
+			DNSExfiltration:    true,
+			ContainerEscape:    true,
+			TTYSurveillance:    true,
+			NetworkFlow:        true,
+		},
+		LearnDuration:     120 * time.Second, // 2min baseline to capture normal load variation
+		DetectionInterval: 5 * time.Second,
+		SampleRate:        100,
+		ConsecutiveHits:   3,
+		MinShiftPercent:   50.0, // Require ≥50% shift for CRITICAL — rootkit hooks add 500μs+, not 2-3μs
+		DashboardAddr:     ":8443",
+		AlertMaxEntries:   1000,
+	}
+}
+
+// LoadFromFile reads configuration from a TOML file.
+func LoadFromFile(path string) (*Config, error) {
+	cfg := DefaultConfig()
+	if _, err := toml.DecodeFile(path, cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// Merge overlays non-zero values from overlay onto base.
+func Merge(base, overlay *Config) *Config {
+	result := *base
+	if overlay.Modules != (ModulesConfig{}) {
+		result.Modules = overlay.Modules
+	}
+	if overlay.LearnDuration != 0 {
+		result.LearnDuration = overlay.LearnDuration
+	}
+	if overlay.DetectionInterval != 0 {
+		result.DetectionInterval = overlay.DetectionInterval
+	}
+	if overlay.SampleRate != 0 {
+		result.SampleRate = overlay.SampleRate
+	}
+	if overlay.ConsecutiveHits != 0 {
+		result.ConsecutiveHits = overlay.ConsecutiveHits
+	}
+	if overlay.DashboardAddr != "" {
+		result.DashboardAddr = overlay.DashboardAddr
+	}
+	if overlay.AuthToken != "" {
+		result.AuthToken = overlay.AuthToken
+	}
+	if overlay.AlertMaxEntries != 0 {
+		result.AlertMaxEntries = overlay.AlertMaxEntries
+	}
+	return &result
+}

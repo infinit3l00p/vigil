@@ -1,0 +1,40 @@
+[Unit]
+Description=VIGIL — eBPF Endpoint Detection and Response
+# After=network.target your-companion-proxy.service  (optional: order after your egress proxy if you run one)
+After=network.target
+# Wants=your-companion-proxy.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vigil
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/vigil /var/log/vigil
+ProtectKernelTunables=no
+ProtectKernelModules=yes
+ProtectControlGroups=no
+ReadWritePaths=/var/lib/vigil /var/log/vigil /sys/fs/cgroup
+
+# eBPF capabilities
+AmbientCapabilities=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_DAC_OVERRIDE CAP_NET_ADMIN
+
+# Resource limits
+MemoryMax=512M
+CPUQuota=50%
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vigil
+
+[Install]
+WantedBy=multi-user.target

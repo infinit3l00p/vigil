@@ -1,0 +1,1 @@
+savedcmd_vigil_rootkit_sim.ko := ld -r -m elf_x86_64 -z noexecstack --no-warn-rwx-segments --build-id=sha1  -T /usr/src/linux-headers-7.0.0-22-generic/scripts/module.lds -o vigil_rootkit_sim.ko vigil_rootkit_sim.o vigil_rootkit_sim.mod.o .module-common.o

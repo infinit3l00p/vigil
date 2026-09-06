@@ -1,0 +1,95 @@
+# VIGIL v0.5 Configuration
+# eBPF-based Endpoint Detection & Response
+
+[global]
+version = "0.5.0"
+
+[modules]
+# v0.1: Temporal anomaly detection (kprobe timing)
+temporal_anomaly = true
+# v0.3: Syscall argument filter (eBPF-PATROL)
+syscall_arg_filter = true
+# v0.4: Cross-view integrity (kernel vs userspace)
+cross_view = true
+# v0.5: Process lineage tracking
+process_lineage = true
+# v0.5a: BPF self-integrity watchdog
+self_integrity = true
+# v0.5b: Behavioral process clustering
+behavioral_clustering = true
+# v0.5c: DNS exfiltration detection
+dns_exfiltration = true
+# v0.5d: Container runtime detection
+container_escape = true
+# v0.5e: TTY input surveillance detection
+tty_surveillance = true
+# v0.5f: Network flow baseline
+network_flow = true
+
+[detection]
+# Baseline learning duration
+learn_duration = "30s"
+# Detection interval (sliding window)
+detection_interval = "5s"
+# Sample rate for eBPF ringbuf
+sample_rate = 100
+# Consecutive hits required for CRITICAL alert
+consecutive_hits = 3
+
+[dashboard]
+# Dashboard listen address
+addr = ":8443"
+
+[alert]
+# Maximum alert entries to keep in memory
+max_entries = 1000
+
+[syscall_arg_filter]
+# Syscall argument filter configuration
+# Allow known system processes to reduce noise
+allow_systemd = true
+allow_root = true
+
+[baseline]
+# How often to refresh the baseline
+refresh_period = "2h"
+# Blend factor: 50% old + fresh samples
+blend_factor = 0.5
+
+[lineage]
+# Lineage rule engine interval
+rule_interval = "30s"
+# Process tree pruning interval
+prune_interval = "5m"
+
+[dns]
+# DNS query rate threshold per process (queries/minute)
+rate_threshold = 1000
+# DNS response size threshold (bytes, above this = possible tunnel)
+large_response_threshold = 4096
+
+[tty]
+# Rate threshold for TTY reads per process (reads/sec)
+read_rate_threshold = 100
+
+[flow]
+# Connection rate threshold per process (connects/minute)
+connect_rate_threshold = 100
+# Unique destination threshold per process
+unique_dest_threshold = 50
+
+[container]
+# Track container namespace transitions
+track_namespaces = true
+
+[integrity]
+# BPF program verification interval
+bpf_check_interval = "5m"
+# Binary hash check interval
+hash_check_interval = "30m"
+
+[clustering]
+# Behavioral clustering analysis interval
+analysis_interval = "30s"
+# Minimum risk score for clustering alerts
+min_alert_score = 50

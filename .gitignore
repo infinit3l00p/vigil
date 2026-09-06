@@ -1,0 +1,4 @@
+build/
+*.o
+vigil
+bin/
