@@ -1,5 +1,10 @@
 # VIGIL — eBPF Endpoint Detection and Response
 
+## Dashboard
+
+![VIGIL EDR Dashboard](docs/screenshots/dashboard.png)
+
+
 *"The watchful eye that never sleeps"*
 
 VIGIL is an eBPF-native Endpoint Detection and Response system for Linux. It protects against endpoint-level adversaries — rootkits, privilege escalation, process injection, and kernel compromise.
