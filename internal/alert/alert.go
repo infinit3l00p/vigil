@@ -59,6 +59,25 @@ func (l Level) MarshalJSON() ([]byte, error) {
 	return json.Marshal(l.String())
 }
 
+// UnmarshalJSON parses a Level from its string form (inverse of MarshalJSON).
+// v0.8.0: fleet mode decodes agent reports containing alerts — without this,
+// string severities ("CRITICAL") fail to decode into the int-based Level and
+// the whole report is rejected.
+func (l *Level) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*l = ParseLevel(s)
+		return nil
+	}
+	// Tolerate raw numeric levels as well
+	var n int
+	if err := json.Unmarshal(data, &n); err == nil {
+		*l = Level(n)
+		return nil
+	}
+	return fmt.Errorf("invalid alert level: %s", data)
+}
+
 // ParseLevel parses a level string.
 func ParseLevel(s string) Level {
 	switch strings.ToUpper(s) {

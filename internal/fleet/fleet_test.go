@@ -124,6 +124,7 @@ func TestReporterDeliversAlerts(t *testing.T) {
 	var mu sync.Mutex
 	var gotAuth, gotEnc string
 	var gotReport Report
+	var decodeErr error
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -136,7 +137,7 @@ func TestReporterDeliversAlerts(t *testing.T) {
 		} else {
 			body, _ = io.ReadAll(r.Body)
 		}
-		_ = json.Unmarshal(body, &gotReport)
+		decodeErr = json.Unmarshal(body, &gotReport)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
@@ -164,8 +165,16 @@ func TestReporterDeliversAlerts(t *testing.T) {
 	if !gotReport.Status.BaselineReady {
 		t.Errorf("status snapshot missing")
 	}
+	if decodeErr != nil {
+		t.Errorf("collector-side report decode failed: %v", decodeErr)
+	}
 	if len(gotReport.Alerts) != 2 || gotReport.Alerts[0].Message != "hello" {
 		t.Errorf("alerts wrong: %+v", gotReport.Alerts)
+	}
+	// Severity must round-trip through the string form (Level.UnmarshalJSON,
+	// added in v0.8.0) — without it the whole report decode fails.
+	if gotReport.Alerts[0].Level != alert.WARN || gotReport.Alerts[1].Level != alert.CRITICAL {
+		t.Errorf("severity round-trip broken: %+v", gotReport.Alerts)
 	}
 	pending, sentOK, _, _ := r.Stats()
 	if pending != 0 || sentOK != 1 {
