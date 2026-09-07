@@ -2,10 +2,12 @@
 package dashboard
 
 import (
+	"compress/gzip"
 	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -17,20 +19,23 @@ import (
 	"github.com/vigil/edr/internal/alert"
 	"github.com/vigil/edr/internal/baseline"
 	"github.com/vigil/edr/internal/bpfintegrity"
-	"github.com/vigil/edr/internal/response"
 	"github.com/vigil/edr/internal/clustering"
 	"github.com/vigil/edr/internal/containerguard"
 	"github.com/vigil/edr/internal/crossview"
 	"github.com/vigil/edr/internal/dnsguard"
 	"github.com/vigil/edr/internal/ebpf"
+	"github.com/vigil/edr/internal/fleet"
 	"github.com/vigil/edr/internal/flowguard"
 	"github.com/vigil/edr/internal/integrity"
 	"github.com/vigil/edr/internal/lineage"
+	"github.com/vigil/edr/internal/models"
+	"github.com/vigil/edr/internal/response"
 	"github.com/vigil/edr/internal/syscallarg"
 	"github.com/vigil/edr/internal/ttyguard"
 )
 
 // Embed the static dashboard HTML
+//
 //go:embed static/*
 var staticFS embed.FS
 
@@ -41,29 +46,31 @@ type EbpfStatus interface {
 
 // Dashboard serves the VIGIL web dashboard.
 type Dashboard struct {
-	mu         sync.Mutex
-	addr        string
-	authToken   string
-	tlsCertFile string
-	tlsKeyFile  string
-	alert       *alert.AlertManager
-	logger     *zap.Logger
-	server     *http.Server
-	integrity  *integrity.SelfCheck
+	mu             sync.Mutex
+	addr           string
+	authToken      string
+	tlsCertFile    string
+	tlsKeyFile     string
+	fleetToken     string           // v0.8.0: shared fleet token, accepted on /api/fleet/* routes
+	fleetCollector *fleet.Collector // v0.8.0: nil = collector role disabled
+	alert          *alert.AlertManager
+	logger         *zap.Logger
+	server         *http.Server
+	integrity      *integrity.SelfCheck
 
 	// Module references for API endpoints
-	ebpfMgr      *ebpf.Manager
-	baseline     *baseline.Baseline
-	crossView    *crossview.CrossViewChecker
-	syscallFilter *syscallarg.SyscallArgFilter
-	lineage      *lineage.LineageChecker
-	bpfIntegrity *bpfintegrity.BPFIntegrityChecker
-	dnsGuard     *dnsguard.DNSGuard
-	ttyGuard     *ttyguard.TTYGuard
+	ebpfMgr        *ebpf.Manager
+	baseline       *baseline.Baseline
+	crossView      *crossview.CrossViewChecker
+	syscallFilter  *syscallarg.SyscallArgFilter
+	lineage        *lineage.LineageChecker
+	bpfIntegrity   *bpfintegrity.BPFIntegrityChecker
+	dnsGuard       *dnsguard.DNSGuard
+	ttyGuard       *ttyguard.TTYGuard
 	containerGuard *containerguard.ContainerGuard
-	flowGuard    *flowguard.FlowGuard
-	clusterer    *clustering.BehaviorClusterer
-	response      *response.ResponseEngine
+	flowGuard      *flowguard.FlowGuard
+	clusterer      *clustering.BehaviorClusterer
+	response       *response.ResponseEngine
 
 	detectionInterval time.Duration
 
@@ -73,9 +80,9 @@ type Dashboard struct {
 	rateCount  map[string]int       // IP → request count in current window
 
 	// SSE connection limiter
-	sseMu        sync.Mutex
-	sseConns     int // current active SSE connections
-	sseMaxConns  int // maximum concurrent SSE connections
+	sseMu       sync.Mutex
+	sseConns    int // current active SSE connections
+	sseMaxConns int // maximum concurrent SSE connections
 }
 
 type DashboardConfig struct {
@@ -84,6 +91,7 @@ type DashboardConfig struct {
 	AuthToken         string // Bearer token for API auth; if empty, bind to localhost only
 	TLSCertFile       string // v0.7: path to TLS cert PEM (empty = plain HTTP)
 	TLSKeyFile        string // v0.7: path to TLS key PEM (empty = plain HTTP)
+	FleetToken        string // v0.8.0: shared fleet token, accepted on /api/fleet/* routes
 }
 
 func NewDashboard(cfg DashboardConfig, alertMgr *alert.AlertManager, logger *zap.Logger) *Dashboard {
@@ -102,6 +110,7 @@ func NewDashboard(cfg DashboardConfig, alertMgr *alert.AlertManager, logger *zap
 		authToken:         cfg.AuthToken,
 		tlsCertFile:       cfg.TLSCertFile,
 		tlsKeyFile:        cfg.TLSKeyFile,
+		fleetToken:        cfg.FleetToken,
 		alert:             alertMgr,
 		logger:            logger,
 		detectionInterval: cfg.DetectionInterval,
@@ -112,19 +121,20 @@ func NewDashboard(cfg DashboardConfig, alertMgr *alert.AlertManager, logger *zap
 }
 
 // Set* methods for wiring modules into the dashboard
-func (d *Dashboard) SetEbpfManager(m *ebpf.Manager)            { d.ebpfMgr = m }
-func (d *Dashboard) SetBaseline(b *baseline.Baseline)             { d.baseline = b }
-func (d *Dashboard) SetCrossViewChecker(cv *crossview.CrossViewChecker) { d.crossView = cv }
-func (d *Dashboard) SetSyscallFilter(sf *syscallarg.SyscallArgFilter)    { d.syscallFilter = sf }
-func (d *Dashboard) SetLineageChecker(lc *lineage.LineageChecker)      { d.lineage = lc }
+func (d *Dashboard) SetEbpfManager(m *ebpf.Manager)                       { d.ebpfMgr = m }
+func (d *Dashboard) SetBaseline(b *baseline.Baseline)                     { d.baseline = b }
+func (d *Dashboard) SetCrossViewChecker(cv *crossview.CrossViewChecker)   { d.crossView = cv }
+func (d *Dashboard) SetSyscallFilter(sf *syscallarg.SyscallArgFilter)     { d.syscallFilter = sf }
+func (d *Dashboard) SetLineageChecker(lc *lineage.LineageChecker)         { d.lineage = lc }
 func (d *Dashboard) SetBPFIntegrity(bi *bpfintegrity.BPFIntegrityChecker) { d.bpfIntegrity = bi }
-func (d *Dashboard) SetDNSGuard(dg *dnsguard.DNSGuard)         { d.dnsGuard = dg }
-func (d *Dashboard) SetTTYGuard(tg *ttyguard.TTYGuard)         { d.ttyGuard = tg }
-func (d *Dashboard) SetContainerGuard(cg *containerguard.ContainerGuard) { d.containerGuard = cg }
-func (d *Dashboard) SetFlowGuard(fg *flowguard.FlowGuard)      { d.flowGuard = fg }
-func (d *Dashboard) SetClusterer(c *clustering.BehaviorClusterer)     { d.clusterer = c }
-func (d *Dashboard) SetResponseEngine(r *response.ResponseEngine)   { d.response = r }
-func (d *Dashboard) SetIntegrity(ic *integrity.SelfCheck)     { d.integrity = ic }
+func (d *Dashboard) SetDNSGuard(dg *dnsguard.DNSGuard)                    { d.dnsGuard = dg }
+func (d *Dashboard) SetTTYGuard(tg *ttyguard.TTYGuard)                    { d.ttyGuard = tg }
+func (d *Dashboard) SetContainerGuard(cg *containerguard.ContainerGuard)  { d.containerGuard = cg }
+func (d *Dashboard) SetFlowGuard(fg *flowguard.FlowGuard)                 { d.flowGuard = fg }
+func (d *Dashboard) SetClusterer(c *clustering.BehaviorClusterer)         { d.clusterer = c }
+func (d *Dashboard) SetResponseEngine(r *response.ResponseEngine)         { d.response = r }
+func (d *Dashboard) SetIntegrity(ic *integrity.SelfCheck)                 { d.integrity = ic }
+func (d *Dashboard) SetFleetCollector(c *fleet.Collector)                 { d.fleetCollector = c } // v0.8.0
 
 func (d *Dashboard) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
@@ -143,7 +153,7 @@ func (d *Dashboard) Start(ctx context.Context) error {
 	// API endpoints
 	mux.HandleFunc("/api/status", d.handleStatus)
 	mux.HandleFunc("/metrics", d.handleMetrics) // v0.6.0: Prometheus
-	mux.HandleFunc("/api/rules", d.handleRules)  // v0.6.0: rules list/toggle API
+	mux.HandleFunc("/api/rules", d.handleRules) // v0.6.0: rules list/toggle API
 	mux.HandleFunc("/api/baseline", d.handleBaseline)
 	mux.HandleFunc("/api/alerts", d.handleAlerts)
 	mux.HandleFunc("/api/integrity", d.handleIntegrity)
@@ -161,6 +171,11 @@ func (d *Dashboard) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/response", d.handleResponse)
 	mux.HandleFunc("/api/response/approve", d.handleResponseApprove)
 	mux.HandleFunc("/api/response/reject", d.handleResponseReject)
+
+	// v0.8.0: fleet mode — agent reporting + fleet view
+	mux.HandleFunc("/api/fleet/report", d.handleFleetReport)
+	mux.HandleFunc("/api/fleet/agents", d.handleFleetAgents)
+	mux.HandleFunc("/api/fleet/alerts", d.handleFleetAlerts)
 
 	// Wrap with auth middleware (rate limiting removed — local-only dashboard on 127.0.0.1)
 	handler := d.authMiddleware(mux)
@@ -204,6 +219,13 @@ func (d *Dashboard) authMiddleware(next http.Handler) http.Handler {
 		// Only protect /api/ routes (except SSE which uses its own auth via query param or header)
 		if strings.HasPrefix(r.URL.Path, "/api/") && d.authToken != "" {
 			authHeader := r.Header.Get("Authorization")
+			// v0.8.0: fleet routes also accept the shared fleet token —
+			// reporting agents hold the fleet token, not the dashboard token.
+			if strings.HasPrefix(r.URL.Path, "/api/fleet/") && d.fleetToken != "" &&
+				authHeader == "Bearer "+d.fleetToken {
+				next.ServeHTTP(w, r)
+				return
+			}
 			expected := "Bearer " + d.authToken
 			if authHeader != expected {
 				w.Header().Set("Content-Type", "application/json")
@@ -276,14 +298,14 @@ func getClientIP(r *http.Request) string {
 
 func (d *Dashboard) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>VIGIL v0.6</title>
+	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>VIGIL v0.8</title>
 <style>body{background:#0a0a0f;color:#e0e0e0;font-family:monospace;margin:0;padding:20px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
 .card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px}
 .card h3{margin:0 0 8px;color:#00d4ff}.ok{color:#0f0}.err{color:#f00}.warn{color:#ff0}
 .critical{color:#ff4444;font-weight:bold}.status{display:flex;gap:8px;align-items:center}
 .dot{width:10px;height:10px;border-radius:50%%}.dot-ok{background:#0f0}.dot-err{background:#f00}
-</style></head><body><h1>🔥 VIGIL v0.6 EDR Dashboard</h1>
+</style></head><body><h1>🔥 VIGIL v0.8 EDR Dashboard</h1>
 <div class="grid">
 <div class="card"><h3>System Status</h3><div id="status">Loading...</div></div>
 <div class="card"><h3>Detection Modules</h3><div id="modules">Loading...</div></div>
@@ -296,6 +318,7 @@ func (d *Dashboard) handleIndex(w http.ResponseWriter, r *http.Request) {
 <div class="card"><h3>Behavioral Clustering</h3><div id="cluster">Loading...</div></div>
 <div class="card" style="grid-column:1/-1"><h3>Response Engine</h3><div id="response">Loading...</div></div>
 <div class="card" style="grid-column:1/-1"><h3>⚙️ Detection Rules</h3><div id="rules" style="max-height:250px;overflow-y:auto">Loading...</div><div style="margin-top:8px;font-size:11px;color:#888">Toggle rules at runtime — disable-states persist across restarts.</div></div>
+<div class="card" style="grid-column:1/-1"><h3>🛰️ Fleet</h3><div id="fleet">Loading...</div></div>
 <div class="card" style="grid-column:1/-1"><div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Recent Alerts</h3><button onclick="saveAlerts()" style="background:#1a1a2e;color:#00d4ff;border:1px solid #00d4ff;border-radius:4px;padding:4px 12px;cursor:pointer;font-family:monospace;font-size:12px">💾 Save</button></div><div id="alerts" style="max-height:300px;overflow-y:auto;margin-top:8px">Loading...</div></div>
 </div>
 <script>
@@ -328,6 +351,9 @@ function loadRules(){fetch('/api/rules').then(r=>r.json()).then(rules=>{let h=''
 function toggleRule(id,enabled){fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,enabled:enabled})}).then(r=>r.json()).then(d=>{if(!d.ok){alert('Failed: '+d.error)}}).catch(e=>alert('Toggle failed'))}
 loadRules();setInterval(loadRules,10000);
 load();setInterval(load,5000);
+function loadFleet(){fetch('/api/fleet/agents').then(r=>r.json()).then(d=>{let el=document.getElementById('fleet');if(d.enabled===false){el.innerHTML='<span style="color:#888">Fleet collection disabled — set [fleet] collector_enabled=true in vigil.toml</span>';return;}if(!(d.agents||[]).length){el.innerHTML='<span style="color:#888">No agents reporting yet</span>';return;}let h='<table style="width:100%%;border-collapse:collapse;font-size:12px"><tr style="color:#00d4ff;text-align:left"><th></th><th>Host</th><th>Agent ID</th><th>Version</th><th>IP</th><th>Status</th><th>Alerts</th><th>Last seen</th></tr>';(d.agents||[]).forEach(a=>{h+='<tr style="border-top:1px solid #333;cursor:pointer" onclick="fleetAlerts(\''+a.agent_id+'\')"><td><div class="dot '+(a.online?'dot-ok':'dot-err')+'"></div></td><td>'+a.hostname+'</td><td style="color:#888">'+a.agent_id+'</td><td>'+a.version+'</td><td>'+a.ip+'</td><td>'+(a.status&&a.status.baseline_ready?'baseline ✓':'learning')+'</td><td>'+a.total_alerts+' ('+a.critical_alerts+' crit)</td><td>'+Math.round((Date.now()-Date.parse(a.last_seen))/1000)+'s ago</td></tr>'});h+='</table><div id="fleet-alerts" style="margin-top:8px;font-size:11px;color:#888">Click an agent row for its recent alerts</div>';el.innerHTML=h}).catch(()=>{document.getElementById('fleet').innerHTML='Fleet API unavailable'})}
+function fleetAlerts(id){fetch('/api/fleet/alerts?agent_id='+encodeURIComponent(id)).then(r=>r.json()).then(d=>{let el=document.getElementById('fleet-alerts');if(!el){return;}let h=(d.alerts||[]).length?'<b>Alerts — '+id+'</b><br>':'';(d.alerts||[]).slice(-10).reverse().forEach(a=>{h+='<div class="'+String(a.severity||'').toLowerCase()+'">'+a.time+' '+a.category+': '+String(a.message).slice(0,120)+'</div>'});el.innerHTML=h||'No alerts from this agent'}).catch(()=>{})}
+loadFleet();setInterval(loadFleet,10000);
 function saveAlerts(){fetch('/api/alerts').then(r=>r.json()).then(d=>{let txt='VIGIL Alert Log — '+new Date().toISOString()+'\n\n';(d.alerts||[]).forEach(a=>{txt+='['+a.time+'] '+a.severity+' '+a.category+': '+a.message+'\n'});if(!(d.alerts||[]).length)txt+='No alerts.';let b=document.createElement('a');b.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));b.download='vigil-alerts-'+Date.now()+'.txt';b.click()}).catch(()=>alert('Failed to fetch alerts'))}
 </script></body></html>`)
 }
@@ -338,22 +364,23 @@ func (d *Dashboard) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 type DashboardStats struct {
-	EBPFEnabled        bool   `json:"ebpf_enabled"`
-	BaselineReady      bool   `json:"baseline_ready"`
-	SelfCheckOK        bool   `json:"self_check_ok"`
+	Version            string   `json:"version"` // v0.8.0
+	EBPFEnabled        bool     `json:"ebpf_enabled"`
+	BaselineReady      bool     `json:"baseline_ready"`
+	SelfCheckOK        bool     `json:"self_check_ok"`
 	SelfCheckDetails   []string `json:"self_check_details,omitempty"`
-	FunctionsMonitored int    `json:"functions_monitored"`
-	DetectionInterval  string `json:"detection_interval"`
+	FunctionsMonitored int      `json:"functions_monitored"`
+	DetectionInterval  string   `json:"detection_interval"`
 
 	// v0.5 module statuses
-	LineageEnabled    bool `json:"lineage_enabled"`
-	BPFIntegrityEnabled bool `json:"bpf_integrity_enabled"`
-	DNSGuardEnabled   bool `json:"dns_guard_enabled"`
-	TTYGuardEnabled   bool `json:"tty_guard_enabled"`
+	LineageEnabled        bool `json:"lineage_enabled"`
+	BPFIntegrityEnabled   bool `json:"bpf_integrity_enabled"`
+	DNSGuardEnabled       bool `json:"dns_guard_enabled"`
+	TTYGuardEnabled       bool `json:"tty_guard_enabled"`
 	ContainerGuardEnabled bool `json:"container_guard_enabled"`
-	FlowGuardEnabled  bool `json:"flow_guard_enabled"`
-	ClusteringEnabled bool `json:"clustering_enabled"`
-	ResponseEnabled   bool `json:"response_enabled"`
+	FlowGuardEnabled      bool `json:"flow_guard_enabled"`
+	ClusteringEnabled     bool `json:"clustering_enabled"`
+	ResponseEnabled       bool `json:"response_enabled"`
 
 	// Aggregate counts
 	TotalProbes  int `json:"total_probes"`
@@ -362,6 +389,7 @@ type DashboardStats struct {
 
 func (d *Dashboard) getDashboardStats() DashboardStats {
 	stats := DashboardStats{
+		Version:           models.VigilVersion,
 		DetectionInterval: d.detectionInterval.String(),
 	}
 
@@ -506,9 +534,9 @@ func (d *Dashboard) handleSyscallFilter(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"enabled":      true,
-		"stats":        d.syscallFilter.GetStats(),
-		"rules_count":  len(d.syscallFilter.GetRules()),
+		"enabled":     true,
+		"stats":       d.syscallFilter.GetStats(),
+		"rules_count": len(d.syscallFilter.GetRules()),
 	})
 }
 
@@ -519,14 +547,14 @@ func (d *Dashboard) handleLineage(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := d.lineage.Stats()
 	writeJSON(w, map[string]interface{}{
-		"enabled":         d.lineage.IsEnabled(),
-		"process_count":   stats.ProcessCount,
-		"alive_count":     stats.AliveCount,
-		"cred_changes":    stats.CredChanges,
-		"ptrace_events":   stats.PtraceEvents,
+		"enabled":          d.lineage.IsEnabled(),
+		"process_count":    stats.ProcessCount,
+		"alive_count":      stats.AliveCount,
+		"cred_changes":     stats.CredChanges,
+		"ptrace_events":    stats.PtraceEvents,
 		"namespace_events": stats.NamespaceEvents,
-		"suid_execs":      stats.SUIDExecs,
-		"rule_matches":    stats.RuleMatches,
+		"suid_execs":       stats.SUIDExecs,
+		"rule_matches":     stats.RuleMatches,
 		"suspicious_procs": stats.SuspiciousProcs,
 	})
 }
@@ -543,7 +571,7 @@ func (d *Dashboard) handleBPFIntegrity(w http.ResponseWriter, r *http.Request) {
 		"bpf_check_events": stats.BPFCheckEvents,
 		"process_exits":    stats.ProcessExits,
 		"unexpected_load":  stats.UnexpectedLoad,
-		"missing_progs":   stats.MissingProgs,
+		"missing_progs":    stats.MissingProgs,
 	})
 }
 
@@ -572,12 +600,12 @@ func (d *Dashboard) handleTTY(w http.ResponseWriter, r *http.Request) {
 	}
 	stats := d.ttyGuard.Stats()
 	writeJSON(w, map[string]interface{}{
-		"enabled":           d.ttyGuard.IsEnabled(),
-		"tty_read_events":   stats.TTYReadEvents,
-		"tty_write_events":  stats.TTYWriteEvents,
-		"pty_write_events":  stats.PTYWriteEvents,
-		"suspicious_reads":  stats.SuspiciousReads,
-		"events_processed":  stats.EventsProcessed,
+		"enabled":          d.ttyGuard.IsEnabled(),
+		"tty_read_events":  stats.TTYReadEvents,
+		"tty_write_events": stats.TTYWriteEvents,
+		"pty_write_events": stats.PTYWriteEvents,
+		"suspicious_reads": stats.SuspiciousReads,
+		"events_processed": stats.EventsProcessed,
 	})
 }
 
@@ -642,13 +670,13 @@ func (d *Dashboard) handleClustering(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"enabled":         true,
+		"enabled":          true,
 		"profiles_tracked": stats.ProfilesTracked,
-		"critical_procs":  stats.CriticalProcs,
+		"critical_procs":   stats.CriticalProcs,
 		"suspicious_procs": stats.SuspiciousProcs,
-		"rule_matches":    stats.RuleMatches,
-		"alerts_fired":    stats.AlertsFired,
-		"top_risks":       top,
+		"rule_matches":     stats.RuleMatches,
+		"alerts_fired":     stats.AlertsFired,
+		"top_risks":        top,
 	})
 }
 
@@ -665,11 +693,11 @@ func (d *Dashboard) handleResponse(w http.ResponseWriter, r *http.Request) {
 		"enabled":          stats.Enabled,
 		"total_responses":  stats.TotalResponses,
 		"pending_actions":  stats.PendingActions,
-		"action_breakdown":  stats.ActionBreakdown,
-		"status_breakdown":  stats.StatusBreakdown,
-		"recent":          recent,
+		"action_breakdown": stats.ActionBreakdown,
+		"status_breakdown": stats.StatusBreakdown,
+		"recent":           recent,
 		"frozen_pids":      d.response.Freezer().FrozenPIDs(),
-		"isolated_pids":     d.response.Isolator().IsolatedPIDs(),
+		"isolated_pids":    d.response.Isolator().IsolatedPIDs(),
 	})
 }
 
@@ -682,7 +710,9 @@ func (d *Dashboard) handleResponseApprove(w http.ResponseWriter, r *http.Request
 		writeJSON(w, map[string]interface{}{"error": "POST required"})
 		return
 	}
-	var req struct{ PID uint32 `json:"pid"` }
+	var req struct {
+		PID uint32 `json:"pid"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, map[string]interface{}{"error": err.Error()})
 		return
@@ -700,7 +730,9 @@ func (d *Dashboard) handleResponseReject(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, map[string]interface{}{"error": "POST required"})
 		return
 	}
-	var req struct{ PID uint32 `json:"pid"` }
+	var req struct {
+		PID uint32 `json:"pid"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, map[string]interface{}{"error": err.Error()})
 		return
@@ -745,6 +777,7 @@ func FormatAlerts(alerts []alert.Alert) []AlertJSON {
 
 // Ensure alert package has the right structure
 var _ = strings.Builder{}
+
 // ────────────────────────────────────────────────────────────────────────
 // v0.6.0: Prometheus /metrics + Rules API
 // ────────────────────────────────────────────────────────────────────────
@@ -852,4 +885,63 @@ func (d *Dashboard) handleRules(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
 	}
+}
+
+// ── v0.8.0: Fleet mode handlers ──────────────────────────────────────
+
+// handleFleetReport accepts agent reports (POST, gzip or plain JSON).
+// Auth: shared fleet token via authMiddleware.
+func (d *Dashboard) handleFleetReport(w http.ResponseWriter, r *http.Request) {
+	if d.fleetCollector == nil {
+		http.Error(w, `{"error": "fleet collector disabled"}`, http.StatusServiceUnavailable)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, `{"error": "POST required"}`, http.StatusMethodNotAllowed)
+		return
+	}
+	var reader io.Reader = http.MaxBytesReader(w, r.Body, 10<<20)
+	if r.Header.Get("Content-Encoding") == "gzip" {
+		gz, err := gzip.NewReader(reader)
+		if err != nil {
+			http.Error(w, `{"error": "bad gzip body"}`, http.StatusBadRequest)
+			return
+		}
+		defer gz.Close()
+		reader = gz
+	}
+	var rep fleet.Report
+	if err := json.NewDecoder(reader).Decode(&rep); err != nil {
+		http.Error(w, `{"error": "bad report"}`, http.StatusBadRequest)
+		return
+	}
+	if err := d.fleetCollector.AcceptReport(rep, getClientIP(r)); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), http.StatusTooManyRequests)
+		return
+	}
+	writeJSON(w, map[string]interface{}{"ok": true, "alerts_accepted": len(rep.Alerts)})
+}
+
+// handleFleetAgents lists all reporting agents for the fleet view.
+func (d *Dashboard) handleFleetAgents(w http.ResponseWriter, r *http.Request) {
+	if d.fleetCollector == nil {
+		writeJSON(w, map[string]interface{}{"enabled": false})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"enabled": true, "agents": d.fleetCollector.ListAgents()})
+}
+
+// handleFleetAlerts returns recent alerts for one agent (?agent_id=).
+func (d *Dashboard) handleFleetAlerts(w http.ResponseWriter, r *http.Request) {
+	if d.fleetCollector == nil {
+		writeJSON(w, map[string]interface{}{"enabled": false})
+		return
+	}
+	agentID := r.URL.Query().Get("agent_id")
+	if agentID == "" {
+		http.Error(w, `{"error": "agent_id required"}`, http.StatusBadRequest)
+		return
+	}
+	alerts := d.fleetCollector.AgentAlerts(agentID, 100)
+	writeJSON(w, map[string]interface{}{"agent_id": agentID, "alerts": FormatAlerts(alerts)})
 }

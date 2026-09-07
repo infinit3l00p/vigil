@@ -2,6 +2,7 @@ package config
 
 import (
 	"github.com/vigil/edr/internal/alert"
+	"github.com/vigil/edr/internal/fleet"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -10,16 +11,19 @@ import (
 // Config holds all VIGIL configuration.
 type Config struct {
 	Modules           ModulesConfig
-	LearnDuration     time.Duration `toml:"learn_duration"`
-	DetectionInterval time.Duration `toml:"detection_interval"`
-	SampleRate        int           `toml:"sample_rate"`
-	ConsecutiveHits   int           `toml:"consecutive_hits"`
-	MinShiftPercent   float64       `toml:"min_shift_percent"` // Minimum timing shift (%) for CRITICAL alerts
-	DashboardAddr     string        `toml:"dashboard_addr"`
-	AuthToken         string        `toml:"auth_token"`
-	TLSCertFile       string        `toml:"tls_cert_file"` // v0.7: PEM path (empty = HTTP)
-	TLSKeyFile        string        `toml:"tls_key_file"`  // v0.7: PEM path (empty = HTTP)
-	Alert             AlertConfig   `toml:"alert"`
+	LearnDuration     time.Duration     `toml:"learn_duration"`
+	DetectionInterval time.Duration     `toml:"detection_interval"`
+	SampleRate        int               `toml:"sample_rate"`
+	ConsecutiveHits   int               `toml:"consecutive_hits"`
+	MinShiftPercent   float64           `toml:"min_shift_percent"` // Minimum timing shift (%) for CRITICAL alerts
+	DashboardAddr     string            `toml:"dashboard_addr"`
+	AuthToken         string            `toml:"auth_token"`
+	TLSCertFile       string            `toml:"tls_cert_file"` // v0.7: PEM path (empty = HTTP)
+	TLSKeyFile        string            `toml:"tls_key_file"`  // v0.7: PEM path (empty = HTTP)
+	Alert             AlertConfig       `toml:"alert"`
+	DataDir           string            `toml:"data_dir"` // v0.8.0: baselines, agent_id, state
+	LogPath           string            `toml:"log_path"` // v0.8.0: alert log file
+	Fleet             fleet.FleetConfig `toml:"fleet"`    // v0.8.0: multi-host aggregation
 }
 
 // AlertConfig configures the alert manager + routing (v0.6.0).
@@ -30,39 +34,41 @@ type AlertConfig struct {
 
 // ModulesConfig controls which VIGIL modules are enabled.
 type ModulesConfig struct {
-	TemporalAnomaly    bool `toml:"temporal_anomaly"`
-	SyscallArgFilter   bool `toml:"syscall_arg_filter"`
-	CrossView          bool `toml:"cross_view"`
-	ProcessLineage     bool `toml:"process_lineage"`
-	SelfIntegrity      bool `toml:"self_integrity"`
+	TemporalAnomaly      bool `toml:"temporal_anomaly"`
+	SyscallArgFilter     bool `toml:"syscall_arg_filter"`
+	CrossView            bool `toml:"cross_view"`
+	ProcessLineage       bool `toml:"process_lineage"`
+	SelfIntegrity        bool `toml:"self_integrity"`
 	BehavioralClustering bool `toml:"behavioral_clustering"`
-	DNSExfiltration    bool `toml:"dns_exfiltration"`
-	ContainerEscape    bool `toml:"container_escape"`
-	TTYSurveillance    bool `toml:"tty_surveillance"`
-	NetworkFlow        bool `toml:"network_flow"`
+	DNSExfiltration      bool `toml:"dns_exfiltration"`
+	ContainerEscape      bool `toml:"container_escape"`
+	TTYSurveillance      bool `toml:"tty_surveillance"`
+	NetworkFlow          bool `toml:"network_flow"`
 }
 
 // DefaultConfig returns the default VIGIL configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		Modules: ModulesConfig{
-			TemporalAnomaly:    true,
-			SyscallArgFilter:   true,
-			CrossView:          true,
-			ProcessLineage:     true,
-			SelfIntegrity:      true,
+			TemporalAnomaly:      true,
+			SyscallArgFilter:     true,
+			CrossView:            true,
+			ProcessLineage:       true,
+			SelfIntegrity:        true,
 			BehavioralClustering: true,
-			DNSExfiltration:    true,
-			ContainerEscape:    true,
-			TTYSurveillance:    true,
-			NetworkFlow:        true,
+			DNSExfiltration:      true,
+			ContainerEscape:      true,
+			TTYSurveillance:      true,
+			NetworkFlow:          true,
 		},
 		LearnDuration:     120 * time.Second, // 2min baseline to capture normal load variation
 		DetectionInterval: 5 * time.Second,
 		SampleRate:        100,
 		ConsecutiveHits:   3,
 		MinShiftPercent:   50.0, // Require ≥50% shift for CRITICAL — rootkit hooks add 500μs+, not 2-3μs
-		DashboardAddr: ":8443",
+		DashboardAddr:     ":8443",
+		DataDir:           "/var/lib/vigil",
+		LogPath:           "/var/log/vigil/alerts.log",
 		Alert: AlertConfig{
 			MaxEntries: 1000,
 		},
@@ -115,6 +121,17 @@ func Merge(base, overlay *Config) *Config {
 	// the router never saw [alert.routing] from the config file.
 	if overlay.Alert.Routing != (alert.RoutingConfig{}) {
 		result.Alert.Routing = overlay.Alert.Routing
+	}
+	// v0.8.0: new config sections — same merge-audit rule (f2f0601):
+	// every new field needs its Merge branch or it is silently dropped.
+	if overlay.DataDir != "" {
+		result.DataDir = overlay.DataDir
+	}
+	if overlay.LogPath != "" {
+		result.LogPath = overlay.LogPath
+	}
+	if overlay.Fleet != (fleet.FleetConfig{}) {
+		result.Fleet = overlay.Fleet
 	}
 	return &result
 }

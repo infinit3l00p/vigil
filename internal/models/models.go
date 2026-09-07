@@ -6,8 +6,8 @@ const (
 	FuncDoSysOpenat2            = 0 // file open
 	FuncVfsRead                 = 1 // file read
 	FuncGetdents64              = 2 // directory listing
-	FuncSecurityInodePermission  = 3 // inode permission
-	FuncSecurityFilePermission   = 4 // file permission
+	FuncSecurityInodePermission = 3 // inode permission
+	FuncSecurityFilePermission  = 4 // file permission
 	FuncSysOpenat               = 5 // syscall file open
 )
 
@@ -63,7 +63,7 @@ var LinuxCapabilities = map[uint32]string{
 }
 
 // VigilVersion is the current version string.
-const VigilVersion = "0.6.0"
+const VigilVersion = "0.8.0"
 
 // Cross-view event types (must match eBPF C defines in vigil_crossview.c)
 const (
@@ -128,8 +128,8 @@ var LineageFlagNames = map[uint32]string{
 
 const (
 	IntEventBPFLoad     = 1
-	IntEventBPFFree      = 2
-	IntEventBPFCheck     = 3
+	IntEventBPFFree     = 2
+	IntEventBPFCheck    = 3
 	IntEventProcessExit = 4
 )
 
@@ -171,11 +171,11 @@ var TTYEventTypeNames = map[uint32]string{
 // ── Container event types (must match vigil_container.c) ──────────
 
 const (
-	ContEventSetNS     = 1
-	ContEventUnshare   = 2
-	ContEventNSCreate  = 3
-	ContEventPrivEsc   = 4
-	ContEventNSEscape  = 5
+	ContEventSetNS    = 1
+	ContEventUnshare  = 2
+	ContEventNSCreate = 3
+	ContEventPrivEsc  = 4
+	ContEventNSEscape = 5
 )
 
 var ContEventTypeNames = map[uint32]string{
@@ -189,11 +189,11 @@ var ContEventTypeNames = map[uint32]string{
 // ── Flow event types (must match vigil_flow.c) ────────────────────
 
 const (
-	FlowEventConnect   = 1
-	FlowEventAccept    = 2
-	FlowEventTCPState  = 3
-	FlowEventSend      = 4
-	FlowEventRecv      = 5
+	FlowEventConnect  = 1
+	FlowEventAccept   = 2
+	FlowEventTCPState = 3
+	FlowEventSend     = 4
+	FlowEventRecv     = 5
 )
 
 var FlowEventTypeNames = map[uint32]string{

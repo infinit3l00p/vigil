@@ -24,6 +24,7 @@ import (
 	"github.com/vigil/edr/internal/detector"
 	"github.com/vigil/edr/internal/dnsguard"
 	ebpfpkg "github.com/vigil/edr/internal/ebpf"
+	"github.com/vigil/edr/internal/fleet"
 	"github.com/vigil/edr/internal/flowguard"
 	"github.com/vigil/edr/internal/integrity"
 	"github.com/vigil/edr/internal/lineage"
@@ -47,6 +48,7 @@ func main() {
 	logger := setupLogger()
 	defer logger.Sync()
 
+	startTime := time.Now()
 	logger.Info("=== VIGIL STARTING ===", zap.String("version", models.VigilVersion))
 
 	// Load config
@@ -61,8 +63,8 @@ func main() {
 		}
 	}
 
-	// Alert manager
-	alertMgr := alert.New("info", "/var/log/vigil/alerts.log")
+	// Alert manager (v0.8.0: log path from config — was hardcoded)
+	alertMgr := alert.New("info", cfg.LogPath)
 
 	// Self-integrity check
 	selfCheck, _ := integrity.NewSelfCheck(func(level, category, msg string, args ...interface{}) {
@@ -86,7 +88,7 @@ func main() {
 
 	// ── v0.2: Baseline + Detection ────────────────────────────────
 	ctx := context.Background()
-	base := baseline.New("/var/lib/vigil/baseline.json", cfg)
+	base := baseline.New(filepath.Join(cfg.DataDir, "baseline.json"), cfg)
 	if cfg.Modules.TemporalAnomaly {
 		// Run baseline learning in a goroutine so the dashboard starts immediately
 		go func() {
@@ -296,6 +298,65 @@ func main() {
 		}
 	}
 
+	// ── v0.8.0: Fleet mode ─────────────────────────────────────────────
+	// Collector role: accept reports from other VIGIL agents.
+	var fleetCollector *fleet.Collector
+	if cfg.Fleet.CollectorEnabled {
+		fleetCollector = fleet.NewCollector(cfg.Fleet, logger)
+		logger.Info("fleet: collector enabled",
+			zap.Int("max_agents", cfg.Fleet.MaxAgents),
+			zap.String("token", boolStr(cfg.Fleet.Token != "")))
+	}
+
+	// Agent role: report status + alerts to a central collector.
+	if cfg.Fleet.CollectorURL != "" {
+		agentID := fleet.LoadOrCreateAgentID(cfg.DataDir)
+		fleetStatusFn := func() fleet.AgentStatus {
+			counts := alertMgr.AlertCount()
+			levels := make(map[string]int, len(counts))
+			for lvl, n := range counts {
+				levels[lvl.String()] = n
+			}
+			status := fleet.AgentStatus{
+				AlertCounts: levels,
+				UptimeSec:   int64(time.Since(startTime).Seconds()),
+			}
+			if base != nil {
+				status.BaselineReady = base.IsReady()
+			}
+			if ebpfMgr != nil {
+				status.EBPFEnabled = ebpfMgr.IsEnabled()
+				status.FunctionsMonitored = len(ebpfMgr.Functions())
+			}
+			type enabler interface{ IsEnabled() bool }
+			active := 0
+			for _, m := range []enabler{cvChecker, bpfInt, dns, tty, contGuard, flow} {
+				if m != nil && m.IsEnabled() {
+					active++
+				}
+			}
+			if lineageChecker != nil && lineageChecker.IsEnabled() {
+				active++
+			}
+			if clusterer != nil {
+				active++
+			}
+			status.ActiveModules = active
+			return status
+		}
+		reporter := fleet.NewReporter(cfg.Fleet, agentID, models.VigilVersion, fleetStatusFn, logger)
+		alertMgr.SetCallback(reporter.HandleAlert)
+		go reporter.Start(sigCtx)
+		interval := 30
+		if cfg.Fleet.IntervalSec > 0 {
+			interval = cfg.Fleet.IntervalSec
+		}
+		logger.Info("fleet: reporter started",
+			zap.String("collector", cfg.Fleet.CollectorURL),
+			zap.String("agent_id", agentID),
+			zap.Int("interval_sec", interval))
+	}
+
 	go responseEngine.Start(sigCtx)
 
 	// Self-integrity periodic check
@@ -326,6 +387,7 @@ func main() {
 		DetectionInterval: cfg.DetectionInterval,
 		TLSCertFile:       cfg.TLSCertFile, // v0.7
 		TLSKeyFile:        cfg.TLSKeyFile,  // v0.7
+		FleetToken:        cfg.Fleet.Token, // v0.8.0
 	}, alertMgr, logger)
 
 	dash.SetIntegrity(selfCheck)
@@ -345,6 +407,7 @@ func main() {
 	dash.SetFlowGuard(flow)
 	dash.SetClusterer(clusterer)
 	dash.SetResponseEngine(responseEngine)
+	dash.SetFleetCollector(fleetCollector) // v0.8.0 — nil when collector disabled
 
 	if err := dash.Start(sigCtx); err != nil {
 		logger.Error("dashboard: failed to start", zap.Error(err))
@@ -448,7 +511,6 @@ func projDir() string {
 	}
 	return "."
 }
-
 
 func boolStr(b bool) string {
 	if b {
