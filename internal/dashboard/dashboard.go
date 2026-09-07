@@ -42,9 +42,11 @@ type EbpfStatus interface {
 // Dashboard serves the VIGIL web dashboard.
 type Dashboard struct {
 	mu         sync.Mutex
-	addr       string
-	authToken  string
-	alert      *alert.AlertManager
+	addr        string
+	authToken   string
+	tlsCertFile string
+	tlsKeyFile  string
+	alert       *alert.AlertManager
 	logger     *zap.Logger
 	server     *http.Server
 	integrity  *integrity.SelfCheck
@@ -80,6 +82,8 @@ type DashboardConfig struct {
 	Addr              string
 	DetectionInterval time.Duration
 	AuthToken         string // Bearer token for API auth; if empty, bind to localhost only
+	TLSCertFile       string // v0.7: path to TLS cert PEM (empty = plain HTTP)
+	TLSKeyFile        string // v0.7: path to TLS key PEM (empty = plain HTTP)
 }
 
 func NewDashboard(cfg DashboardConfig, alertMgr *alert.AlertManager, logger *zap.Logger) *Dashboard {
@@ -96,6 +100,8 @@ func NewDashboard(cfg DashboardConfig, alertMgr *alert.AlertManager, logger *zap
 	return &Dashboard{
 		addr:              cfg.Addr,
 		authToken:         cfg.AuthToken,
+		tlsCertFile:       cfg.TLSCertFile,
+		tlsKeyFile:        cfg.TLSKeyFile,
 		alert:             alertMgr,
 		logger:            logger,
 		detectionInterval: cfg.DetectionInterval,
@@ -165,9 +171,16 @@ func (d *Dashboard) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		d.logger.Info("dashboard: starting", zap.String("addr", d.addr))
-		if err := d.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			d.logger.Error("dashboard: server error", zap.Error(err))
+		if d.tlsCertFile != "" && d.tlsKeyFile != "" {
+			d.logger.Info("dashboard: starting (TLS)", zap.String("addr", d.addr))
+			if err := d.server.ListenAndServeTLS(d.tlsCertFile, d.tlsKeyFile); err != nil && err != http.ErrServerClosed {
+				d.logger.Error("dashboard: TLS server error", zap.Error(err))
+			}
+		} else {
+			d.logger.Info("dashboard: starting", zap.String("addr", d.addr))
+			if err := d.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				d.logger.Error("dashboard: server error", zap.Error(err))
+			}
 		}
 	}()
 
@@ -282,6 +295,7 @@ func (d *Dashboard) handleIndex(w http.ResponseWriter, r *http.Request) {
 <div class="card"><h3>BPF Integrity</h3><div id="bpf">Loading...</div></div>
 <div class="card"><h3>Behavioral Clustering</h3><div id="cluster">Loading...</div></div>
 <div class="card" style="grid-column:1/-1"><h3>Response Engine</h3><div id="response">Loading...</div></div>
+<div class="card" style="grid-column:1/-1"><h3>⚙️ Detection Rules</h3><div id="rules" style="max-height:250px;overflow-y:auto">Loading...</div><div style="margin-top:8px;font-size:11px;color:#888">Toggle rules at runtime — disable-states persist across restarts.</div></div>
 <div class="card" style="grid-column:1/-1"><div style="display:flex;justify-content:space-between;align-items:center"><h3 style="margin:0">Recent Alerts</h3><button onclick="saveAlerts()" style="background:#1a1a2e;color:#00d4ff;border:1px solid #00d4ff;border-radius:4px;padding:4px 12px;cursor:pointer;font-family:monospace;font-size:12px">💾 Save</button></div><div id="alerts" style="max-height:300px;overflow-y:auto;margin-top:8px">Loading...</div></div>
 </div>
 <script>
@@ -310,6 +324,9 @@ fetch('/api/flow').then(r=>r.json()).then(d=>{document.getElementById('flow').in
 fetch('/api/tty').then(r=>r.json()).then(d=>{document.getElementById('tty').innerHTML='Reads: '+d.tty_read_events+' | Suspicious: '+d.suspicious_reads}).catch(()=>{});
 fetch('/api/container').then(r=>r.json()).then(d=>{document.getElementById('container').innerHTML='SetNS: '+d.setns_events+' | Unshare: '+d.unshare_events+' | Escapes: '+d.ns_escapes}).catch(()=>{});
 fetch('/api/bpf-integrity').then(r=>r.json()).then(d=>{document.getElementById('bpf').innerHTML='BPF Checks: '+d.bpf_check_events+' | Procs Exits: '+d.process_exits}).catch(()=>{});}
+function loadRules(){fetch('/api/rules').then(r=>r.json()).then(rules=>{let h='';(Array.isArray(rules)?rules:[]).forEach(r=>{h+='<div style="display:flex;align-items:center;gap:8px;padding:2px 0;border-bottom:1px solid #333"><input type="checkbox" '+(r.enabled?'checked':'')+' onchange="toggleRule(\''+r.id+'\',this.checked)" style="cursor:pointer"><span style="flex:1">'+r.id+'</span><span style="color:#888;font-size:11px">'+r.action+'</span><span style="color:#666;font-size:11px">'+r.event_type+'</span></div>'});document.getElementById('rules').innerHTML=h||'No rules'}).catch(()=>{document.getElementById('rules').innerHTML='Rules API unavailable'})}
+function toggleRule(id,enabled){fetch('/api/rules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,enabled:enabled})}).then(r=>r.json()).then(d=>{if(!d.ok){alert('Failed: '+d.error)}}).catch(e=>alert('Toggle failed'))}
+loadRules();setInterval(loadRules,10000);
 load();setInterval(load,5000);
 function saveAlerts(){fetch('/api/alerts').then(r=>r.json()).then(d=>{let txt='VIGIL Alert Log — '+new Date().toISOString()+'\n\n';(d.alerts||[]).forEach(a=>{txt+='['+a.time+'] '+a.severity+' '+a.category+': '+a.message+'\n'});if(!(d.alerts||[]).length)txt+='No alerts.';let b=document.createElement('a');b.href=URL.createObjectURL(new Blob([txt],{type:'text/plain'}));b.download='vigil-alerts-'+Date.now()+'.txt';b.click()}).catch(()=>alert('Failed to fetch alerts'))}
 </script></body></html>`)

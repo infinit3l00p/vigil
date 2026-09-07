@@ -17,6 +17,8 @@ type Config struct {
 	MinShiftPercent   float64       `toml:"min_shift_percent"` // Minimum timing shift (%) for CRITICAL alerts
 	DashboardAddr     string        `toml:"dashboard_addr"`
 	AuthToken         string        `toml:"auth_token"`
+	TLSCertFile       string        `toml:"tls_cert_file"` // v0.7: PEM path (empty = HTTP)
+	TLSKeyFile        string        `toml:"tls_key_file"`  // v0.7: PEM path (empty = HTTP)
 	Alert             AlertConfig   `toml:"alert"`
 }
 
@@ -99,6 +101,12 @@ func Merge(base, overlay *Config) *Config {
 	}
 	if overlay.AuthToken != "" {
 		result.AuthToken = overlay.AuthToken
+	}
+	if overlay.TLSCertFile != "" {
+		result.TLSCertFile = overlay.TLSCertFile
+	}
+	if overlay.TLSKeyFile != "" {
+		result.TLSKeyFile = overlay.TLSKeyFile
 	}
 	if overlay.Alert.MaxEntries != 0 {
 		result.Alert.MaxEntries = overlay.Alert.MaxEntries

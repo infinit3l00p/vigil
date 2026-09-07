@@ -39,6 +39,10 @@ consecutive_hits = 3
 [dashboard]
 # Dashboard listen address
 addr = ":8443"
+# v0.7: TLS (set both paths to enable HTTPS; leave empty for plain HTTP)
+# Generate a self-signed cert: openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -days 365 -nodes -subj "/CN=vigil"
+tls_cert_file = ""
+tls_key_file = ""
 
 [alert]
 # Maximum alert entries to keep in memory
