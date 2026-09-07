@@ -3,10 +3,12 @@ package alert
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"net/smtp"
 	"os"
 	"strings"
 	"sync"
@@ -32,6 +34,18 @@ type RoutingConfig struct {
 	TelegramMinLevel  string `toml:"telegram_min_level" json:"telegram_min_level"` // default: critical
 	JSONLPath         string `toml:"jsonl_path" json:"jsonl_path"`                  // Structured event log (eve.json-style)
 	SendTimeoutSec    int    `toml:"send_timeout_sec" json:"send_timeout_sec"`      // default: 5
+
+	// v0.8.0: Email/SMTP routing.
+	// SMTPServer+EmailTo enable the route; port 587 = STARTTLS (default),
+	// port 465 = implicit TLS (smtps). Use an app password — never a primary
+	// account password.
+	SMTPServer   string `toml:"smtp_server" json:"smtp_server"`     // e.g. "smtp.gmail.com"
+	SMTPPort     int    `toml:"smtp_port" json:"smtp_port"`       // default: 587; 465 = implicit TLS
+	SMTPUsername string `toml:"smtp_username" json:"smtp_username"` // optional (SMTP AUTH)
+	SMTPPassword string `toml:"smtp_password" json:"smtp_password"` // optional; use app passwords
+	EmailFrom    string `toml:"email_from" json:"email_from"`       // e.g. "vigil@example.com"
+	EmailTo      string `toml:"email_to" json:"email_to"`           // comma-separated recipients
+	EmailMinLevel string `toml:"email_min_level" json:"email_min_level"` // default: critical
 }
 
 // Router fans alerts out to configured destinations.
@@ -44,7 +58,7 @@ type Router struct {
 	jsonlFile *os.File
 
 	// per-route minimum levels (parsed once)
-	webhookLevel, slackLevel, discordLevel, telegramLevel Level
+	webhookLevel, slackLevel, discordLevel, telegramLevel, emailLevel Level
 
 	// error throttling: log send failures at most once per minute per route
 	lastErrLog map[string]time.Time
@@ -53,7 +67,8 @@ type Router struct {
 // NewRouter creates an alert router. Returns nil if no destinations configured.
 func NewRouter(cfg RoutingConfig) *Router {
 	hasAny := cfg.WebhookURL != "" || cfg.SlackURL != "" || cfg.DiscordURL != "" ||
-		(cfg.TelegramToken != "" && cfg.TelegramChatID != "") || cfg.JSONLPath != ""
+		(cfg.TelegramToken != "" && cfg.TelegramChatID != "") || cfg.JSONLPath != "" ||
+		(cfg.SMTPServer != "" && cfg.EmailTo != "")
 	if !hasAny {
 		return nil
 	}
@@ -87,6 +102,10 @@ func NewRouter(cfg RoutingConfig) *Router {
 	r.telegramLevel = ParseLevel(cfg.TelegramMinLevel)
 	if cfg.TelegramMinLevel == "" {
 		r.telegramLevel = CRITICAL
+	}
+	r.emailLevel = ParseLevel(cfg.EmailMinLevel)
+	if cfg.EmailMinLevel == "" {
+		r.emailLevel = CRITICAL
 	}
 
 	// JSONL structured event log
@@ -136,6 +155,10 @@ func (r *Router) Route(a Alert) {
 	if r.cfg.TelegramToken != "" && r.cfg.TelegramChatID != "" && a.Level >= r.telegramLevel {
 		go r.sendTelegram(r.cfg.TelegramToken, r.cfg.TelegramChatID, a)
 	}
+	// v0.8.0: email route
+	if r.cfg.SMTPServer != "" && r.cfg.EmailTo != "" && a.Level >= r.emailLevel {
+		go r.sendEmail(a)
+	}
 }
 
 // ─── senders ────────────────────────────────────────────────────────────
@@ -181,6 +204,128 @@ func (r *Router) sendTelegram(token, chatID string, a Alert) {
 	}
 	body, _ := json.Marshal(payload)
 	r.postJSON("telegram", url, "application/json", body)
+}
+
+// ─── v0.8.0: Email/SMTP sender ─────────────────────────────────────────
+
+// buildEmailMessage renders a minimal RFC 5322 message for an alert.
+func (r *Router) buildEmailMessage(a Alert, from string, recipients []string) []byte {
+	var msg bytes.Buffer
+	fmt.Fprintf(&msg, "From: %s\r\n", from)
+	fmt.Fprintf(&msg, "To: %s\r\n", strings.Join(recipients, ", "))
+	fmt.Fprintf(&msg, "Subject: [VIGIL %s] %s\r\n", a.Level, a.Category)
+	msg.WriteString("MIME-Version: 1.0\r\n")
+	msg.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
+	fmt.Fprintf(&msg, "Date: %s\r\n", a.Timestamp.Format(time.RFC1123Z))
+	msg.WriteString("\r\n")
+	fmt.Fprintf(&msg, "VIGIL Alert\r\n\r\n")
+	fmt.Fprintf(&msg, "Severity: %s\r\n", a.Level)
+	fmt.Fprintf(&msg, "Category: %s\r\n", a.Category)
+	fmt.Fprintf(&msg, "Message:   %s\r\n", a.Message)
+	fmt.Fprintf(&msg, "Time:      %s\r\n", a.Timestamp.Format(time.RFC3339))
+	if a.PID != 0 {
+		fmt.Fprintf(&msg, "PID:       %d\r\n", a.PID)
+	}
+	msg.WriteString("\r\n--\r\nSent by VIGIL eBPF EDR alert routing.\r\n")
+	return msg.Bytes()
+}
+
+// sendEmail delivers an alert via SMTP. Port 465 = implicit TLS (smtps);
+// any other port uses smtp.SendMail, which upgrades via STARTTLS when the
+// server advertises it. Errors are throttled like every other route.
+func (r *Router) sendEmail(a Alert) {
+	port := r.cfg.SMTPPort
+	if port <= 0 {
+		port = 587
+	}
+	recipients := splitRecipients(r.cfg.EmailTo)
+	if len(recipients) == 0 {
+		return
+	}
+	from := r.cfg.EmailFrom
+	if from == "" {
+		from = "vigil@" + r.cfg.SMTPServer
+	}
+	msg := r.buildEmailMessage(a, from, recipients)
+	addr := fmt.Sprintf("%s:%d", r.cfg.SMTPServer, port)
+
+	if port == 465 {
+		r.sendEmailImplicitTLS(addr, from, recipients, msg)
+		return
+	}
+
+	var auth smtp.Auth
+	if r.cfg.SMTPUsername != "" {
+		// smtp.PlainAuth refuses to send credentials over a plaintext
+		// connection (non-localhost), so this is safe by default.
+		auth = smtp.PlainAuth("", r.cfg.SMTPUsername, r.cfg.SMTPPassword, r.cfg.SMTPServer)
+	}
+	if err := smtp.SendMail(addr, auth, from, recipients, msg); err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("send failed: %v", err))
+	}
+}
+
+// sendEmailImplicitTLS handles smtps (port 465): TLS before SMTP.
+func (r *Router) sendEmailImplicitTLS(addr, from string, recipients []string, msg []byte) {
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: r.cfg.SMTPServer})
+	if err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("TLS dial %s: %v", addr, err))
+		return
+	}
+	defer conn.Close()
+
+	c, err := smtp.NewClient(conn, r.cfg.SMTPServer)
+	if err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("client: %v", err))
+		return
+	}
+	defer c.Close()
+
+	if r.cfg.SMTPUsername != "" {
+		auth := smtp.PlainAuth("", r.cfg.SMTPUsername, r.cfg.SMTPPassword, r.cfg.SMTPServer)
+		if err = c.Auth(auth); err != nil {
+			r.logErrThrottled("email", fmt.Sprintf("auth: %v", err))
+			return
+		}
+	}
+	if err = c.Mail(from); err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("MAIL FROM: %v", err))
+		return
+	}
+	for _, rcpt := range recipients {
+		if err = c.Rcpt(rcpt); err != nil {
+			r.logErrThrottled("email", fmt.Sprintf("RCPT %s: %v", rcpt, err))
+			return
+		}
+	}
+	w, err := c.Data()
+	if err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("DATA: %v", err))
+		return
+	}
+	if _, err = w.Write(msg); err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("write body: %v", err))
+		return
+	}
+	if err = w.Close(); err != nil {
+		r.logErrThrottled("email", fmt.Sprintf("close body: %v", err))
+		return
+	}
+	if err = c.Quit(); err != nil {
+		// Quit failure after DATA is harmless — message already accepted.
+		r.logErrThrottled("email", fmt.Sprintf("quit: %v", err))
+	}
+}
+
+// splitRecipients parses a comma-separated recipient list.
+func splitRecipients(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if rcpt := strings.TrimSpace(part); rcpt != "" {
+			out = append(out, rcpt)
+		}
+	}
+	return out
 }
 
 // postJSON posts a JSON body, with error throttling: a failing destination

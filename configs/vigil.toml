@@ -70,6 +70,18 @@ jsonl_path = "/var/log/vigil/alerts.jsonl"
 # HTTP timeout for external sends (seconds)
 send_timeout_sec = 5
 
+# ── Email/SMTP Routing (v0.8.0) ────────────────────────────────────
+# Sends alerts as email. smtp_server + email_to enable the route.
+# Port 587 (default) = STARTTLS; port 465 = implicit TLS (smtps).
+# Use an app password — never a primary account password.
+#smtp_server = "smtp.example.com"
+#smtp_port = 587
+#smtp_username = "vigil@example.com"
+#smtp_password = "app-password-here"
+#email_from = "vigil@example.com"
+#email_to = "soc@example.com, oncall@example.com"
+#email_min_level = "critical"
+
 [syscall_arg_filter]
 # Syscall argument filter configuration
 # Allow known system processes to reduce noise
