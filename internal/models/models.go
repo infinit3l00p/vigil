@@ -63,7 +63,7 @@ var LinuxCapabilities = map[uint32]string{
 }
 
 // VigilVersion is the current version string.
-const VigilVersion = "0.5.3"
+const VigilVersion = "0.6.0"
 
 // Cross-view event types (must match eBPF C defines in vigil_crossview.c)
 const (

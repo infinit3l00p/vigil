@@ -263,14 +263,14 @@ func getClientIP(r *http.Request) string {
 
 func (d *Dashboard) handleIndex(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>VIGIL v0.5</title>
+	fmt.Fprintf(w, `<!DOCTYPE html><html><head><title>VIGIL v0.6</title>
 <style>body{background:#0a0a0f;color:#e0e0e0;font-family:monospace;margin:0;padding:20px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
 .card{background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:16px}
 .card h3{margin:0 0 8px;color:#00d4ff}.ok{color:#0f0}.err{color:#f00}.warn{color:#ff0}
 .critical{color:#ff4444;font-weight:bold}.status{display:flex;gap:8px;align-items:center}
 .dot{width:10px;height:10px;border-radius:50%%}.dot-ok{background:#0f0}.dot-err{background:#f00}
-</style></head><body><h1>🔥 VIGIL v0.5 EDR Dashboard</h1>
+</style></head><body><h1>🔥 VIGIL v0.6 EDR Dashboard</h1>
 <div class="grid">
 <div class="card"><h3>System Status</h3><div id="status">Loading...</div></div>
 <div class="card"><h3>Detection Modules</h3><div id="modules">Loading...</div></div>
