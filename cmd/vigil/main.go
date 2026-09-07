@@ -328,12 +328,24 @@ func main() {
 				status.EBPFEnabled = ebpfMgr.IsEnabled()
 				status.FunctionsMonitored = len(ebpfMgr.Functions())
 			}
-			type enabler interface{ IsEnabled() bool }
 			active := 0
-			for _, m := range []enabler{cvChecker, bpfInt, dns, tty, contGuard, flow} {
-				if m != nil && m.IsEnabled() {
-					active++
-				}
+			if cvChecker != nil && cvChecker.IsEnabled() {
+				active++
+			}
+			if bpfInt != nil && bpfInt.IsEnabled() {
+				active++
+			}
+			if dns != nil && dns.IsEnabled() {
+				active++
+			}
+			if tty != nil && tty.IsEnabled() {
+				active++
+			}
+			if contGuard != nil && contGuard.IsEnabled() {
+				active++
+			}
+			if flow != nil && flow.IsEnabled() {
+				active++
 			}
 			if lineageChecker != nil && lineageChecker.IsEnabled() {
 				active++
@@ -413,12 +425,33 @@ func main() {
 		logger.Error("dashboard: failed to start", zap.Error(err))
 	}
 
+	// NOTE (v0.8.0): explicit nil checks on the CONCRETE types. The old
+	// []enabled{...} interface-slice pattern put typed nil pointers into
+	// interfaces (interface != nil even when the pointer is nil) and
+	// panicked whenever a module was disabled — exposed by the fleet e2e
+	// with modules off; unreachable in production only because all modules
+	// were always enabled.
 	activeModules := 0
-	type enabled interface{ IsEnabled() bool }
-	for _, m := range []enabled{ebpfMgr, cvChecker, bpfInt, dns, tty, contGuard, flow} {
-		if m != nil && m.IsEnabled() {
-			activeModules++
-		}
+	if ebpfMgr != nil && ebpfMgr.IsEnabled() {
+		activeModules++
+	}
+	if cvChecker != nil && cvChecker.IsEnabled() {
+		activeModules++
+	}
+	if bpfInt != nil && bpfInt.IsEnabled() {
+		activeModules++
+	}
+	if dns != nil && dns.IsEnabled() {
+		activeModules++
+	}
+	if tty != nil && tty.IsEnabled() {
+		activeModules++
+	}
+	if contGuard != nil && contGuard.IsEnabled() {
+		activeModules++
+	}
+	if flow != nil && flow.IsEnabled() {
+		activeModules++
 	}
 	if lineageChecker != nil && lineageChecker.IsEnabled() {
 		activeModules++
