@@ -11,10 +11,10 @@
 //   - Network monitoring: detect C2 callbacks and unexpected connections
 //
 // Architecture (eBPF-PATROL 4-component pattern):
-//   1. Probe Manager: eBPF kprobes capture syscall arguments
-//   2. Rule Engine: TOML-defined rules for allow/deny/alert
-//   3. Context Analyzer: process context enrichment (pid→comm→exe→uid)
-//   4. Response Handler: integrated with VIGIL alert system
+//  1. Probe Manager: eBPF kprobes capture syscall arguments
+//  2. Rule Engine: TOML-defined rules for allow/deny/alert
+//  3. Context Analyzer: process context enrichment (pid→comm→exe→uid)
+//  4. Response Handler: integrated with VIGIL alert system
 package syscallarg
 
 import (
@@ -35,6 +35,7 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/vigil/edr/internal/alert"
 	"github.com/vigil/edr/internal/config"
+	ebpfpkg "github.com/vigil/edr/internal/ebpf"
 	"github.com/vigil/edr/internal/models"
 )
 
@@ -159,18 +160,18 @@ const (
 
 // Rule defines a syscall argument filter rule.
 type Rule struct {
-	ID          string     `toml:"id" json:"id"`
-	Description string     `toml:"description" json:"description"`
-	EventType   string     `toml:"event_type" json:"event_type"` // "open", "connect", "execve", "capable"
-	PathPattern string     `toml:"path_pattern" json:"path_pattern"` // Glob pattern for path matching
-	Port        uint16     `toml:"port" json:"port"`               // Network port (connect only)
-	Capability  uint32     `toml:"capability" json:"capability"`   // Capability number (capable only)
-	UID         uint32     `toml:"uid" json:"uid"`                  // Match specific UID (0 = any)
-	Comm        string     `toml:"comm" json:"comm"`               // Match process comm name
-	ExcludeComms []string  `toml:"exclude_comms" json:"exclude_comms"` // Skip alert if comm matches any
-	Action      RuleAction `toml:"action" json:"action"`            // "allow", "alert", "deny"
-	Severity    string     `toml:"severity" json:"severity"`        // "info", "warn", "critical"
-	Enabled     bool       `toml:"-" json:"enabled"`                 // v0.6.0: runtime toggle (not TOML-parsed; defaults true via applyOverrides)
+	ID           string     `toml:"id" json:"id"`
+	Description  string     `toml:"description" json:"description"`
+	EventType    string     `toml:"event_type" json:"event_type"`       // "open", "connect", "execve", "capable"
+	PathPattern  string     `toml:"path_pattern" json:"path_pattern"`   // Glob pattern for path matching
+	Port         uint16     `toml:"port" json:"port"`                   // Network port (connect only)
+	Capability   uint32     `toml:"capability" json:"capability"`       // Capability number (capable only)
+	UID          uint32     `toml:"uid" json:"uid"`                     // Match specific UID (0 = any)
+	Comm         string     `toml:"comm" json:"comm"`                   // Match process comm name
+	ExcludeComms []string   `toml:"exclude_comms" json:"exclude_comms"` // Skip alert if comm matches any
+	Action       RuleAction `toml:"action" json:"action"`               // "allow", "alert", "deny"
+	Severity     string     `toml:"severity" json:"severity"`           // "info", "warn", "critical"
+	Enabled      bool       `toml:"-" json:"enabled"`                   // v0.6.0: runtime toggle (not TOML-parsed; defaults true via applyOverrides)
 }
 
 // matches checks if an ArgEvent matches this rule.
@@ -232,17 +233,17 @@ func (r *Rule) matches(event *ArgEvent) bool {
 
 // SyscallArgFilter is the main syscall argument filter engine.
 type SyscallArgFilter struct {
-	cfg    *config.Config
-	alrt   *alert.AlertManager
-	rules  []Rule
-	mu     sync.RWMutex
+	cfg   *config.Config
+	alrt  *alert.AlertManager
+	rules []Rule
+	mu    sync.RWMutex
 
 	// eBPF management
 	collection *ebpf.Collection
-	links     []link.Link
-	reader    *ringbuf.Reader
-	enabled   bool
-	stub      bool
+	links      []link.Link
+	reader     *ringbuf.Reader
+	enabled    bool
+	stub       bool
 
 	// Statistics
 	stats   FilterStats
@@ -437,22 +438,22 @@ func DefaultRules() []Rule {
 
 		// === Capability rules ===
 		{
-			ID:          "cap-sys-admin",
-			Description: "Alert on CAP_SYS_ADMIN usage",
-			EventType:   "capable",
-			Capability:  21,
+			ID:           "cap-sys-admin",
+			Description:  "Alert on CAP_SYS_ADMIN usage",
+			EventType:    "capable",
+			Capability:   21,
 			ExcludeComms: []string{"ptyxis", "gnome-shell", "Xwayland", "systemd", "systemctl", "journalctl", "login", "sshd", "sudo", "su", "polkitd", "udisksd", "NetworkManager", "prx-proxy", "vigil", "runc", "snap-confine", "snap-update-ns", "containerd", "dockerd", "bpftool", "ss", "glxtest", "vaapitest", "forkserver", "Sandbox Forked", "localsearch-ext", "firefox", "chrome", "Renderer", "Isolate", "Sandbox", "glycin-svg", "glycin-image-rs"},
-			Action:      ActionAlert,
-			Severity:    "warn",
+			Action:       ActionAlert,
+			Severity:     "warn",
 		},
 		{
-			ID:          "cap-net-admin",
-			Description: "Alert on CAP_NET_ADMIN usage",
-			EventType:   "capable",
-			Capability:  12,
+			ID:           "cap-net-admin",
+			Description:  "Alert on CAP_NET_ADMIN usage",
+			EventType:    "capable",
+			Capability:   12,
 			ExcludeComms: []string{"systemctl", "NetworkManager", "prx-proxy", "vigil", "nft", "ss", "bpftool", "systemd-logind", "systemd-oomd", "systemd-udevd", "systemd-resolved", "snap-confine", "systemd-machine", "systemd-run", "systemd-cat", "systemd-stdio-b", "(sd-bright)", "(update-sddm-b)", "(udev-worker)", "(sh)", "wpa_supplicant", "apt-get"},
-			Action:      ActionAlert,
-			Severity:    "warn",
+			Action:       ActionAlert,
+			Severity:     "warn",
 		},
 		{
 			ID:          "cap-sys-ptrace",
@@ -577,11 +578,11 @@ func (saf *SyscallArgFilter) Load() error {
 // NewStubFilter creates a filter that runs without eBPF.
 func NewStubFilter(cfg *config.Config, alrt *alert.AlertManager) *SyscallArgFilter {
 	return &SyscallArgFilter{
-		cfg:    cfg,
-		alrt:   alrt,
-		rules:  DefaultRules(),
+		cfg:     cfg,
+		alrt:    alrt,
+		rules:   DefaultRules(),
 		enabled: false,
-		stub:   true,
+		stub:    true,
 		stats: FilterStats{
 			ByType:   make(map[string]int64),
 			ByAction: make(map[string]int64),
@@ -599,10 +600,10 @@ func (saf *SyscallArgFilter) attachProbes() error {
 
 	probes := []probeDef{
 		{"vigil_arg_open_entry", "do_sys_openat2", "file open (arg capture)"},
-		{"vigil_arg_openat_entry", "__x64_sys_openat", "file open syscall (arg capture)"},
+		{"vigil_arg_openat_entry", ebpfpkg.SyscallWrapper("openat"), "file open syscall (arg capture)"},
 		{"vigil_arg_capable_entry", "security_capable", "capability check (arg capture)"},
 		{"vigil_arg_execve_entry", "do_execveat_common.isra.0", "process execution (arg capture)"},
-		{"vigil_arg_connect_entry", "__x64_sys_connect", "network connection (arg capture)"},
+		{"vigil_arg_connect_entry", ebpfpkg.SyscallWrapper("connect"), "network connection (arg capture)"},
 	}
 
 	attached := 0

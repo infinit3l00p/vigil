@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vigil/edr/internal/alert"
+	ebpfpkg "github.com/vigil/edr/internal/ebpf"
 	"github.com/vigil/edr/internal/models"
 )
 
@@ -44,27 +45,27 @@ type DNSGuard struct {
 
 type DNSGuardStats struct {
 	TotalQueries    int
-	TotalResponses int
-	QueryBytes     int64
-	ResponseBytes  int64
-	UniqueServers  int
-	SuspiciousRate int
-	HighEntropy    int
-	LargeResponses int
+	TotalResponses  int
+	QueryBytes      int64
+	ResponseBytes   int64
+	UniqueServers   int
+	SuspiciousRate  int
+	HighEntropy     int
+	LargeResponses  int
 	EventsProcessed int
 }
 
 // DNSProcessStats tracks per-process DNS behavior.
 type DNSProcessStats struct {
-	PID          uint32
-	Comm         string
-	QueryCount   int
+	PID           uint32
+	Comm          string
+	QueryCount    int
 	ResponseCount int
-	BytesOut     int64
-	BytesIn      int64
-	UniqueDests  map[uint32]bool
-	FirstSeen    time.Time
-	LastSeen     time.Time
+	BytesOut      int64
+	BytesIn       int64
+	UniqueDests   map[uint32]bool
+	FirstSeen     time.Time
+	LastSeen      time.Time
 }
 
 func NewDNSGuard(alertMgr *alert.AlertManager, logger *zap.Logger) (*DNSGuard, error) {
@@ -89,7 +90,7 @@ func (dg *DNSGuard) Load(objPath string) error {
 
 	attachCount := 0
 	if prog := dg.coll.Programs["handle_sendto"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_sendto", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("sendto"), prog, nil)
 		if err != nil {
 			dg.logger.Warn("dns: failed to attach sendto", zap.Error(err))
 		} else {
@@ -98,7 +99,7 @@ func (dg *DNSGuard) Load(objPath string) error {
 		}
 	}
 	if prog := dg.coll.Programs["handle_recvfrom"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_recvfrom", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("recvfrom"), prog, nil)
 		if err != nil {
 			dg.logger.Warn("dns: failed to attach recvfrom", zap.Error(err))
 		} else {

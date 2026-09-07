@@ -103,7 +103,28 @@ Rootkits that hook kernel functions ADD execution time. Even when they hide thei
 # Prerequisites: Go 1.24+, clang 18+, bpftool, kernel with BTF support
 
 ./scripts/install.sh
+# or: make bpf && make build
 ```
+
+### ARM64 Support (v0.8.0)
+
+VIGIL runs on ARM64 — Raspberry Pi 5, ARM servers, AWS Graviton:
+
+```bash
+# On the ARM64 host — eBPF objects must be compiled against the target
+# kernel's BTF (vmlinux.h is auto-regenerated for ARM64 when needed):
+make bpf && make build
+
+# Or cross-compile just the userspace binary from an x86 dev box
+# (pure Go, no cgo), then build the BPF objects on the ARM64 host:
+make arm64
+```
+
+Architecture handling is automatic on both sides:
+- **Go**: syscall wrapper symbols resolve at runtime — `__x64_sys_*` on amd64, `__arm64_sys_*` on arm64 (`internal/ebpf/arch.go`, used by every kprobe attach site)
+- **C**: the same decision at compile time via `-D__TARGET_ARCH_arm64|x86` (`VIGIL_SYSCALL_*` macros in `bpf_src/`); `make bpf`/`install.sh` pass the right flag from `uname -m`
+- **PT_REGS register access** follows the target define through `bpf_tracing.h`
+- The shipped `vmlinux.h` was generated from an x86 kernel; on ARM64 hosts it is detected (via `user_pt_regs`) and regenerated from the local kernel's BTF
 
 ## Running
 

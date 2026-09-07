@@ -21,6 +21,19 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 #define VIGIL_MAX_PATH_LEN     256
@@ -145,7 +158,7 @@ int BPF_KPROBE(vigil_arg_open_entry)
 
 /* ── KPROBE: __x64_sys_openat (syscall-level open) ─────────────── */
 
-SEC("kprobe/__x64_sys_openat")
+SEC("kprobe/" VIGIL_SYSCALL_STR(openat))
 int BPF_KPROBE(vigil_arg_openat_entry)
 {
     if (!arg_enabled())
@@ -237,7 +250,7 @@ int BPF_KPROBE(vigil_arg_execve_entry)
 
 /* ── KPROBE: __x64_sys_connect (network connection) ────────────── */
 
-SEC("kprobe/__x64_sys_connect")
+SEC("kprobe/" VIGIL_SYSCALL_STR(connect))
 int BPF_KPROBE(vigil_arg_connect_entry)
 {
     if (!arg_enabled())

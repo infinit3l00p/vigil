@@ -38,6 +38,19 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 /* Maximum number of monitored kernel functions */
@@ -291,7 +304,7 @@ int BPF_KRETPROBE(vigil_vfs_read_exit)
 
 /* ── KPROBE: __x64_sys_getdents64 ────────────────────────────────── */
 
-SEC("kprobe/__x64_sys_getdents64")
+SEC("kprobe/" VIGIL_SYSCALL_STR(getdents64))
 int BPF_KPROBE(vigil_getdents64_entry)
 {
     if (!vigil_enabled())
@@ -306,7 +319,7 @@ int BPF_KPROBE(vigil_getdents64_entry)
     return 0;
 }
 
-SEC("kretprobe/__x64_sys_getdents64")
+SEC("kretprobe/" VIGIL_SYSCALL_STR(getdents64))
 int BPF_KRETPROBE(vigil_getdents64_exit)
 {
     if (!vigil_enabled())
@@ -450,7 +463,7 @@ int BPF_KRETPROBE(vigil_secfile_perm_exit)
 
 /* ── KPROBE: __x64_sys_openat ────────────────────────────────────── */
 
-SEC("kprobe/__x64_sys_openat")
+SEC("kprobe/" VIGIL_SYSCALL_STR(openat))
 int BPF_KPROBE(vigil_sysopenat_entry)
 {
     if (!vigil_enabled())
@@ -465,7 +478,7 @@ int BPF_KPROBE(vigil_sysopenat_entry)
     return 0;
 }
 
-SEC("kretprobe/__x64_sys_openat")
+SEC("kretprobe/" VIGIL_SYSCALL_STR(openat))
 int BPF_KRETPROBE(vigil_sysopenat_exit)
 {
     if (!vigil_enabled())

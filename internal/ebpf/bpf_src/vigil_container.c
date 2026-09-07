@@ -30,6 +30,19 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 #define VIGIL_MAX_COMM_LEN       16
 #define VIGIL_MAX_NS_TRACKED     8192
 #define VIGIL_MAX_PATH_LEN       128
@@ -110,7 +123,7 @@ static __always_inline int cont_enabled(void)
 }
 
 /* ── KPROBE: __x64_sys_setns (container-focused) ─────────────────── */
-SEC("kprobe/__x64_sys_setns")
+SEC("kprobe/" VIGIL_SYSCALL_STR(setns))
 int BPF_KPROBE(handle_cont_setns, struct pt_regs *regs)
 {
     if (!cont_enabled())
@@ -150,7 +163,7 @@ int BPF_KPROBE(handle_cont_setns, struct pt_regs *regs)
 }
 
 /* ── KPROBE: __x64_sys_unshare (container-focused) ──────────────── */
-SEC("kprobe/__x64_sys_unshare")
+SEC("kprobe/" VIGIL_SYSCALL_STR(unshare))
 int BPF_KPROBE(handle_cont_unshare, struct pt_regs *regs)
 {
     if (!cont_enabled())

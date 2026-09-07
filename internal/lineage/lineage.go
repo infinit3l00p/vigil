@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vigil/edr/internal/alert"
+	ebpfpkg "github.com/vigil/edr/internal/ebpf"
 	"github.com/vigil/edr/internal/models"
 )
 
@@ -35,18 +36,18 @@ import (
 
 // LineageNode represents a process in the lineage tree.
 type LineageNode struct {
-	PID      uint32
-	PPID     uint32
-	UID      uint32
-	GID      uint32
-	EUID     uint32
-	EGID     uint32
-	StartNS  uint64
-	ExitNS   uint64
-	Flags    uint32
-	Comm     string
-	Path     string
-	Alive    bool
+	PID     uint32
+	PPID    uint32
+	UID     uint32
+	GID     uint32
+	EUID    uint32
+	EGID    uint32
+	StartNS uint64
+	ExitNS  uint64
+	Flags   uint32
+	Comm    string
+	Path    string
+	Alive   bool
 }
 
 // LineageRule defines an anomalous execution chain pattern.
@@ -86,19 +87,19 @@ func DefaultLineageRules() []LineageRule {
 
 // LineageChecker manages the eBPF lineage tracking and rule engine.
 type LineageChecker struct {
-	mu        sync.Mutex
-	coll      *ebpf.Collection
-	reader    *ringbuf.Reader
-	links     []link.Link
-	alert     *alert.AlertManager
-	logger    *zap.Logger
-	tree      map[uint32]*LineageNode // PID → node
-	rules     []LineageRule
-	stats     LineageStats
-	statsMu   sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-	enabled   bool
+	mu      sync.Mutex
+	coll    *ebpf.Collection
+	reader  *ringbuf.Reader
+	links   []link.Link
+	alert   *alert.AlertManager
+	logger  *zap.Logger
+	tree    map[uint32]*LineageNode // PID → node
+	rules   []LineageRule
+	stats   LineageStats
+	statsMu sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
+	enabled bool
 }
 
 // LineageStats holds lineage tracking statistics.
@@ -116,9 +117,9 @@ type LineageStats struct {
 // NewLineageChecker creates and initializes a lineage tracker.
 func NewLineageChecker(alertMgr *alert.AlertManager, logger *zap.Logger) (*LineageChecker, error) {
 	return &LineageChecker{
-		tree:  make(map[uint32]*LineageNode),
-		rules: DefaultLineageRules(),
-		alert: alertMgr,
+		tree:   make(map[uint32]*LineageNode),
+		rules:  DefaultLineageRules(),
+		alert:  alertMgr,
 		logger: logger,
 	}, nil
 }
@@ -142,10 +143,10 @@ func (lc *LineageChecker) Load(objPath string) error {
 	attachCount := 0
 	kprobes := map[string]string{
 		"handle_bprm_committing_creds": "security_bprm_committing_creds",
-		"handle_ptrace_check":         "security_ptrace_access_check",
-		"handle_lineage_setns":        "__x64_sys_setns",
-		"handle_lineage_unshare":      "__x64_sys_unshare",
-		"handle_lineage_cap_capable":  "cap_capable",
+		"handle_ptrace_check":          "security_ptrace_access_check",
+		"handle_lineage_setns":         ebpfpkg.SyscallWrapper("setns"),
+		"handle_lineage_unshare":       ebpfpkg.SyscallWrapper("unshare"),
+		"handle_lineage_cap_capable":   "cap_capable",
 	}
 	for progName, symbol := range kprobes {
 		if prog := lc.coll.Programs[progName]; prog != nil {

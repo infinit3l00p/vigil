@@ -35,6 +35,19 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 #define VIGIL_MAX_COMM_LEN       16
@@ -202,7 +215,7 @@ static __always_inline void update_proc_stats(__u32 pid, __u32 daddr, __u32 len,
  *              const struct sockaddr *dest_addr, socklen_t addrlen)
  *   rdi=sockfd, rsi=buf, rdx=len, rcx=flags, r8=dest_addr, r9=addrlen
  */
-SEC("kprobe/__x64_sys_sendto")
+SEC("kprobe/" VIGIL_SYSCALL_STR(sendto))
 int BPF_KPROBE(handle_sendto, struct pt_regs *regs)
 {
     if (!dns_enabled())
@@ -273,7 +286,7 @@ int BPF_KPROBE(handle_sendto, struct pt_regs *regs)
  * recvfrom() receives DNS responses.
  * We capture response size to detect DNS tunneling (large responses).
  */
-SEC("kprobe/__x64_sys_recvfrom")
+SEC("kprobe/" VIGIL_SYSCALL_STR(recvfrom))
 int BPF_KPROBE(handle_recvfrom, struct pt_regs *regs)
 {
     if (!dns_enabled())

@@ -21,6 +21,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vigil/edr/internal/alert"
+	ebpfpkg "github.com/vigil/edr/internal/ebpf"
 	"github.com/vigil/edr/internal/models"
 )
 
@@ -39,9 +40,9 @@ type ContainerGuard struct {
 }
 
 type ContainerGuardStats struct {
-	SetNSEvents    int
-	UnshareEvents  int
-	NSEscapes      int
+	SetNSEvents     int
+	UnshareEvents   int
+	NSEscapes       int
 	PrivEscAttempts int
 	EventsProcessed int
 }
@@ -68,7 +69,7 @@ func (cg *ContainerGuard) Load(objPath string) error {
 
 	attachCount := 0
 	if prog := cg.coll.Programs["handle_cont_setns"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_setns", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("setns"), prog, nil)
 		if err != nil {
 			cg.logger.Warn("container: failed to attach setns", zap.Error(err))
 		} else {
@@ -77,7 +78,7 @@ func (cg *ContainerGuard) Load(objPath string) error {
 		}
 	}
 	if prog := cg.coll.Programs["handle_cont_unshare"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_unshare", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("unshare"), prog, nil)
 		if err != nil {
 			cg.logger.Warn("container: failed to attach unshare", zap.Error(err))
 		} else {
@@ -262,7 +263,7 @@ func (cg *ContainerGuard) handleNSCreate(raw []byte) {
 	comm := strings.TrimRight(string(raw[32:48]), "\x00")
 
 	// User namespace creation is a privilege escalation vector
-	if nstype & 0x10000000 != 0 { // CLONE_NEWUSER
+	if nstype&0x10000000 != 0 { // CLONE_NEWUSER
 		cg.statsMu.Lock()
 		cg.stats.PrivEscAttempts++
 		cg.statsMu.Unlock()
@@ -326,22 +327,22 @@ func (cg *ContainerGuard) Close() {
 // These should not generate CONTAINER_ESCAPE alerts.
 func isLegitContainerProcess(comm string) bool {
 	legit := []string{
-		"runc",           // OCI container runtime
+		"runc",            // OCI container runtime
 		"runc:[",          // runc child processes (runc:[1:CHILD], runc:[2:INIT])
-		"snap-confine",   // Snap app confinement (uses setns for namespace enter)
-		"containerd",     // containerd runtime
+		"snap-confine",    // Snap app confinement (uses setns for namespace enter)
+		"containerd",      // containerd runtime
 		"containerd-shim", // containerd shim
-		"dockerd",        // Docker daemon
-		"docker-init",    // Docker init
-		"podman",         // Podman runtime
-		"crun",           // C container runtime
-		"youki",          // Rust container runtime
-		"systemd-nspawn", // systemd container spawning
-		"unshare",        // unshare command (used by Snap, systemd
-		"firefox",        // Firefox uses CLONE_NEWPID for content sandbox
-		"gnome-shell",    // GNOME session isolation
-		"snap-update-ns", // Snap namespace update
-		"systemd-timed",  // systemd timer namespace
+		"dockerd",         // Docker daemon
+		"docker-init",     // Docker init
+		"podman",          // Podman runtime
+		"crun",            // C container runtime
+		"youki",           // Rust container runtime
+		"systemd-nspawn",  // systemd container spawning
+		"unshare",         // unshare command (used by Snap, systemd
+		"firefox",         // Firefox uses CLONE_NEWPID for content sandbox
+		"gnome-shell",     // GNOME session isolation
+		"snap-update-ns",  // Snap namespace update
+		"systemd-timed",   // systemd timer namespace
 	}
 	for _, l := range legit {
 		if strings.HasPrefix(comm, l) || comm == l {

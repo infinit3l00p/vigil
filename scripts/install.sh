@@ -40,39 +40,54 @@ if [ ! -f /sys/kernel/btf/vmlinux ]; then
     exit 1
 fi
 
+# Architecture detection (v0.8.0: ARM64 support)
+ARCH=$(uname -m)
+case "${ARCH}" in
+    aarch64|arm64) TARGET_ARCH=arm64 ;;
+    *)             TARGET_ARCH=x86 ;;
+esac
+
 echo "  Go:      $(go version | awk '{print $3}')"
 echo "  clang:   $(clang --version | head -1)"
 echo "  bpftool: $(bpftool version | head -1)"
 echo "  BTF:     available"
+echo "  Arch:    ${ARCH} (__TARGET_ARCH_${TARGET_ARCH})"
 echo ""
 
 # Create build directories
 mkdir -p "${BPF_OUT}" "${BUILD_DIR}"
 
-# Compile eBPF programs
+# Compile eBPF programs (v0.8.0: all modules, architecture-aware)
 echo "[*] Compiling eBPF programs..."
-clang -O2 -g -target bpf \
-    -D__TARGET_ARCH_x86 \
-    -I"${BPF_SRC}" \
-    -I/usr/include/bpf \
-    -c "${BPF_SRC}/vigil_kprobe.c" \
-    -o "${BPF_OUT}/vigil_kprobe.o"
+BPF_PROGRAMS="kprobe syscall_arg crossview container dns flow lineage tty integrity"
 
-if [ $? -ne 0 ]; then
-    echo "ERROR: eBPF compilation failed"
-    exit 1
-fi
-
-echo "  ✓ vigil_kprobe.o compiled"
-
-# Generate vmlinux.h if not present
+# vmlinux.h: generate if missing. On ARM64 hosts, regenerate if the shipped
+# header was generated from an x86 kernel (user_pt_regs exists only in arm64 BTF).
 if [ ! -f "${BPF_SRC}/vmlinux.h" ]; then
     echo "[*] Generating vmlinux.h..."
     bpftool btf dump file /sys/kernel/btf/vmlinux format c > "${BPF_SRC}/vmlinux.h"
     echo "  ✓ vmlinux.h generated"
-else
-    echo "  ✓ vmlinux.h present"
+elif [ "${TARGET_ARCH}" = "arm64" ] && ! grep -q "struct user_pt_regs" "${BPF_SRC}/vmlinux.h" 2>/dev/null; then
+    echo "[*] vmlinux.h was generated for x86 — regenerating for ARM64 kernel BTF..."
+    bpftool btf dump file /sys/kernel/btf/vmlinux format c > "${BPF_SRC}/vmlinux.h"
+    echo "  ✓ vmlinux.h regenerated for ARM64"
 fi
+
+for prog in ${BPF_PROGRAMS}; do
+    clang -O2 -g -target bpf \
+        -D__TARGET_ARCH_${TARGET_ARCH} \
+        -I"${BPF_SRC}" \
+        -I/usr/include/bpf \
+        -c "${BPF_SRC}/vigil_${prog}.c" \
+        -o "${BPF_OUT}/vigil_${prog}.o"
+
+    if [ $? -ne 0 ]; then
+        echo "ERROR: eBPF compilation failed for vigil_${prog}.c"
+        exit 1
+    fi
+
+    echo "  ✓ vigil_${prog}.o compiled"
+done
 
 # Build Go binary
 echo "[*] Building VIGIL binary..."
@@ -105,10 +120,12 @@ echo "[*] Installing..."
 install -m 0755 "${BIN_OUT}" /usr/local/bin/vigil
 echo "  ✓ /usr/local/bin/vigil"
 
-# eBPF objects
+# eBPF objects (all modules)
 mkdir -p /usr/local/lib/vigil
-install -m 0644 "${BPF_OUT}/vigil_kprobe.o" /usr/local/lib/vigil/
-echo "  ✓ /usr/local/lib/vigil/vigil_kprobe.o"
+for prog in ${BPF_PROGRAMS}; do
+    install -m 0644 "${BPF_OUT}/vigil_${prog}.o" /usr/local/lib/vigil/
+done
+echo "  ✓ /usr/local/lib/vigil/ (${BPF_PROGRAMS})"
 
 # Config directory
 mkdir -p /etc/vigil

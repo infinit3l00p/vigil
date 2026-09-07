@@ -39,6 +39,19 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 #define VIGIL_MAX_COMM_LEN     16
@@ -303,7 +316,7 @@ int BPF_KPROBE(handle_lineage_ptrace_check)
  * However, we only update the lineage tree flags here,
  * no ringbuf event (container module handles alerting).
  */
-SEC("kprobe/__x64_sys_setns")
+SEC("kprobe/" VIGIL_SYSCALL_STR(setns))
 int BPF_KPROBE(handle_lineage_setns)
 {
     if (!lin_enabled())
@@ -325,7 +338,7 @@ int BPF_KPROBE(handle_lineage_setns)
  *
  * NOTE: Also hooked by container module. We only update flags here.
  */
-SEC("kprobe/__x64_sys_unshare")
+SEC("kprobe/" VIGIL_SYSCALL_STR(unshare))
 int BPF_KPROBE(handle_lineage_unshare)
 {
     if (!lin_enabled())

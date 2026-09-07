@@ -34,15 +34,17 @@ import (
 
 // TimingEvent mirrors the C struct vigil_timing_event.
 // C struct layout (with padding for __u64 alignment):
-//   offset 0:  func_id  (__u32)
-//   offset 4:  pid       (__u32)
-//   offset 8:  tid       (__u32)
-//   offset 12: _pad0     (__u32) padding
-//   offset 16: start_ns  (__u64)
-//   offset 24: elapsed_ns(__u64)
-//   offset 32: cpu       (__u32)
-//   offset 36: flags     (__u8)
-//   offset 37: pad[3]   (__u8[3])
+//
+//	offset 0:  func_id  (__u32)
+//	offset 4:  pid       (__u32)
+//	offset 8:  tid       (__u32)
+//	offset 12: _pad0     (__u32) padding
+//	offset 16: start_ns  (__u64)
+//	offset 24: elapsed_ns(__u64)
+//	offset 32: cpu       (__u32)
+//	offset 36: flags     (__u8)
+//	offset 37: pad[3]   (__u8[3])
+//
 // Total: 40 bytes
 type TimingEvent struct {
 	FuncID    uint32
@@ -62,9 +64,9 @@ func parseEvent(raw []byte) (*TimingEvent, error) {
 	}
 
 	return &TimingEvent{
-		FuncID:    binary.LittleEndian.Uint32(raw[0:4]),
-		PID:       binary.LittleEndian.Uint32(raw[4:8]),
-		TID:       binary.LittleEndian.Uint32(raw[8:12]),
+		FuncID: binary.LittleEndian.Uint32(raw[0:4]),
+		PID:    binary.LittleEndian.Uint32(raw[4:8]),
+		TID:    binary.LittleEndian.Uint32(raw[8:12]),
 		// offset 12-15: padding
 		StartNS:   binary.LittleEndian.Uint64(raw[16:24]),
 		ElapsedNS: binary.LittleEndian.Uint64(raw[24:32]),
@@ -83,25 +85,33 @@ type MonitoredFunction struct {
 // Core kernel functions to monitor for rootkit detection.
 // Based on Trace of the Times (DTRAP 2025) — most reliable targets.
 // Updated for kernel 7.x compatibility.
-var DefaultFunctions = []MonitoredFunction{
-	{0, "do_sys_openat2", "file open — detects file-hiding rootkits"},
-	{1, "vfs_read", "file read — detects content-hiding rootkits"},
-	{2, "__x64_sys_getdents64", "directory listing — detects directory enumeration hooks"},
-	{3, "security_inode_permission", "inode permission — detects permission escalation hooks"},
-	{4, "security_file_permission", "file permission — detects file access hooks"},
-	{5, "__x64_sys_openat", "file open (syscall) — detects syscall-level hooks"},
+// v0.8.0: syscall wrapper symbols are architecture-aware (ARM64 support) —
+// __x64_sys_* on amd64, __arm64_sys_* on arm64 — resolved at runtime.
+var DefaultFunctions = buildDefaultFunctions()
+
+// buildDefaultFunctions builds the monitored-function table with
+// architecture-correct syscall wrapper symbols.
+func buildDefaultFunctions() []MonitoredFunction {
+	return []MonitoredFunction{
+		{0, "do_sys_openat2", "file open — detects file-hiding rootkits"},
+		{1, "vfs_read", "file read — detects content-hiding rootkits"},
+		{2, SyscallWrapper("getdents64"), "directory listing — detects directory enumeration hooks"},
+		{3, "security_inode_permission", "inode permission — detects permission escalation hooks"},
+		{4, "security_file_permission", "file permission — detects file access hooks"},
+		{5, SyscallWrapper("openat"), "file open (syscall) — detects syscall-level hooks"},
+	}
 }
 
 // Manager manages VIGIL's eBPF programs lifecycle.
 type Manager struct {
-	cfg       *config.Config
-	mu        sync.RWMutex
+	cfg        *config.Config
+	mu         sync.RWMutex
 	collection *ebpf.Collection
-	links     []link.Link
-	reader    *ringbuf.Reader
-	functions []MonitoredFunction
-	enabled   bool
-	stub      bool // true if running in stub (no eBPF) mode
+	links      []link.Link
+	reader     *ringbuf.Reader
+	functions  []MonitoredFunction
+	enabled    bool
+	stub       bool // true if running in stub (no eBPF) mode
 }
 
 // NewStubManager creates a manager that runs without eBPF (userspace-only mode).
@@ -204,12 +214,12 @@ func shortName(fn string) string {
 		return "secinode_perm"
 	case "security_file_permission":
 		return "secfile_perm"
-	case "__x64_sys_openat":
+	case "__x64_sys_openat", "__arm64_sys_openat":
 		return "sysopenat"
 	case "vfs_read":
 		return "vfs_read" // keep full name, 'read' would be ambiguous
 	default:
-		prefixes := []string{"do_sys_", "__x64_sys_", "do_"}
+		prefixes := []string{"do_sys_", "__x64_sys_", "__arm64_sys_", "do_"}
 		for _, p := range prefixes {
 			if len(fn) > len(p) && fn[:len(p)] == p {
 				return fn[len(p):]

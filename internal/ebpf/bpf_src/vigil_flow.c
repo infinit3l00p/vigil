@@ -41,6 +41,19 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
 
+/* ── Architecture-portable syscall wrapper names (v0.8.0: ARM64) ────── */
+/* SEC names are section metadata only; the actual kprobe attach happens
+ * from Go via ebpf.SyscallWrapper() with the same arch logic. */
+#if defined(__TARGET_ARCH_arm64)
+#define VIGIL_SYSCALL_(n) __arm64_sys_##n
+#else
+#define VIGIL_SYSCALL_(n) __x64_sys_##n
+#endif
+#define VIGIL_STR_(x) #x
+#define VIGIL_SYSCALL_STR(n) VIGIL_SYSCALL_EXPAND(VIGIL_SYSCALL_(n))
+#define VIGIL_SYSCALL_EXPAND(x) VIGIL_STR_(x)
+
+
 /* ── Constants ──────────────────────────────────────────────────── */
 
 #define VIGIL_MAX_COMM_LEN       16
@@ -178,7 +191,7 @@ static __always_inline void track_dest(__u32 pid, __u32 daddr, __u16 dport)
 }
 
 /* ── KPROBE: __x64_sys_connect ──────────────────────────────────── */
-SEC("kprobe/__x64_sys_connect")
+SEC("kprobe/" VIGIL_SYSCALL_STR(connect))
 int BPF_KPROBE(handle_flow_connect, struct pt_regs *regs)
 {
     if (!flow_enabled())
@@ -256,7 +269,7 @@ int BPF_KPROBE(handle_flow_connect, struct pt_regs *regs)
 }
 
 /* ── KPROBE: __x64_sys_accept4 ──────────────────────────────────── */
-SEC("kprobe/__x64_sys_accept4")
+SEC("kprobe/" VIGIL_SYSCALL_STR(accept4))
 int BPF_KPROBE(handle_flow_accept, struct pt_regs *regs)
 {
     if (!flow_enabled())

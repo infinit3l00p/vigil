@@ -25,6 +25,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/vigil/edr/internal/alert"
+	ebpfpkg "github.com/vigil/edr/internal/ebpf"
 	"github.com/vigil/edr/internal/models"
 )
 
@@ -55,8 +56,8 @@ type FlowGuardStats struct {
 
 // Known C2/reverse shell ports
 var suspiciousPorts = map[uint16]string{
-	4444: "metasploit",
-	5555: "reverse-shell",
+	4444:  "metasploit",
+	5555:  "reverse-shell",
 	31337: "backdoor",
 	1234:  "default-c2",
 	6666:  "irc-c2",
@@ -86,7 +87,7 @@ func (fg *FlowGuard) Load(objPath string) error {
 
 	attachCount := 0
 	if prog := fg.coll.Programs["handle_flow_connect"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_connect", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("connect"), prog, nil)
 		if err != nil {
 			fg.logger.Warn("flow: failed to attach connect", zap.Error(err))
 		} else {
@@ -95,7 +96,7 @@ func (fg *FlowGuard) Load(objPath string) error {
 		}
 	}
 	if prog := fg.coll.Programs["handle_flow_accept"]; prog != nil {
-		l, err := link.Kprobe("__x64_sys_accept4", prog, nil)
+		l, err := link.Kprobe(ebpfpkg.SyscallWrapper("accept4"), prog, nil)
 		if err != nil {
 			fg.logger.Warn("flow: failed to attach accept4", zap.Error(err))
 		} else {
@@ -227,21 +228,22 @@ func (fg *FlowGuard) handleAccept(raw []byte) {
 // anomalyCheck runs periodically to detect flow anomalies.
 //
 // The eBPF flow_proc_stats struct layout (from vigil_flow.c):
-//   offset 0:  pid (u32)
-//   offset 4:  uid (u32)
-//   offset 8:  connect_count (u64)
-//   offset 16: accept_count (u64)
-//   offset 24: bytes_sent (u64)
-//   offset 32: bytes_recv (u64)
-//   offset 40: first_event_ns (u64)
-//   offset 48: last_event_ns (u64)
-//   offset 56: unique_dest_ips (u32)
-//   offset 60: unique_dest_ports (u32)
-//   offset 64: unique_src_ports (u32)
-//   offset 68: short_lived_conns (u32)
-//   offset 72: last_update_ns (u64)
-//   offset 80: comm (char[16])
-//   Total: 96 bytes
+//
+//	offset 0:  pid (u32)
+//	offset 4:  uid (u32)
+//	offset 8:  connect_count (u64)
+//	offset 16: accept_count (u64)
+//	offset 24: bytes_sent (u64)
+//	offset 32: bytes_recv (u64)
+//	offset 40: first_event_ns (u64)
+//	offset 48: last_event_ns (u64)
+//	offset 56: unique_dest_ips (u32)
+//	offset 60: unique_dest_ports (u32)
+//	offset 64: unique_src_ports (u32)
+//	offset 68: short_lived_conns (u32)
+//	offset 72: last_update_ns (u64)
+//	offset 80: comm (char[16])
+//	Total: 96 bytes
 //
 // Note: unique_dest_ips is incremented by eBPF's track_dest() for each
 // unique (pid, daddr, dport) tuple — it overcounts because same IP with
@@ -294,13 +296,13 @@ func (fg *FlowGuard) anomalyCheck() {
 					// high connection counts (dbus-daemon, NetworkManager, etc.)
 					skipComms := map[string]bool{
 						"systemd":         true,
-						"systemd-journal":  true,
+						"systemd-journal": true,
 						"systemd-resolve": true,
 						"dbus-daemon":     true,
-						"NetworkManager": true,
+						"NetworkManager":  true,
 						"sshd":            true,
-						"dockerd":        true,
-						"containerd":     true,
+						"dockerd":         true,
+						"containerd":      true,
 					}
 					if skipComms[comm] {
 						continue
