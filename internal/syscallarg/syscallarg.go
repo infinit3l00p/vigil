@@ -829,7 +829,10 @@ func (saf *SyscallArgFilter) GetRules() []Rule {
 // ── v0.6.0: runtime rule enable/disable with persistence ──────────────
 
 // overridesPath is where disabled rule IDs are persisted across restarts.
-const overridesPath = "/etc/vigil/rule_overrides.json"
+// v0.7 fix: was /etc/vigil — blocked by ProtectSystem=strict in the systemd
+// unit (only /var/lib/vigil and /var/log/vigil are writable). Runtime state
+// belongs in /var/lib anyway.
+const overridesPath = "/var/lib/vigil/rule_overrides.json"
 
 // SetRuleEnabled enables/disables a rule by ID at runtime.
 // The change persists to /etc/vigil/rule_overrides.json and survives restarts.
@@ -859,7 +862,7 @@ func (saf *SyscallArgFilter) SetRuleEnabled(id string, enabled bool) error {
 			disabled = append(disabled, r.ID)
 		}
 	}
-	if err := os.MkdirAll("/etc/vigil", 0755); err != nil {
+	if err := os.MkdirAll("/var/lib/vigil", 0755); err != nil {
 		return err
 	}
 	data, _ := json.Marshal(map[string][]string{"disabled": disabled})
