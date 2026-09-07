@@ -103,5 +103,10 @@ func Merge(base, overlay *Config) *Config {
 	if overlay.Alert.MaxEntries != 0 {
 		result.Alert.MaxEntries = overlay.Alert.MaxEntries
 	}
+	// v0.6.0 fix (2026-09-07): routing config was silently dropped by Merge —
+	// the router never saw [alert.routing] from the config file.
+	if overlay.Alert.Routing != (alert.RoutingConfig{}) {
+		result.Alert.Routing = overlay.Alert.Routing
+	}
 	return &result
 }
