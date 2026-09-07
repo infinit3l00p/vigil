@@ -4,6 +4,13 @@
 
 ![VIGIL EDR Dashboard](docs/screenshots/dashboard.png)
 
+## v0.6.0 — Alert Routing, Prometheus Metrics, Rules UI
+
+- **Alert routing** — fan alerts to webhook, Slack, Discord, or Telegram with per-route severity levels, plus a Suricata-style JSONL event log for SIEM ingestion. Non-blocking: destinations can never stall detection.
+- **Prometheus `/metrics`** — alert counters, module status, and detection gauges in standard text format. Point Grafana at your VIGIL instance, zero glue.
+- **Rules API + UI** — list and toggle syscall-arg rules at runtime via `GET/POST /api/rules`; disable-states persist across restarts (`/etc/vigil/rule_overrides.json`).
+- **Multi-callback alert bus** — the response engine and routing run as independent listeners; add your own via `SetCallback`.
+
 
 *"The watchful eye that never sleeps"*
 

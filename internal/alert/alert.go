@@ -100,7 +100,7 @@ type AlertManager struct {
 	logger    *log.Logger
 	alerts    []Alert
 	maxAlerts int // Bounded alert buffer (TCA defense)
-	callback  func(Alert) // Optional: alert callback for response engine
+	callbacks []func(Alert) // v0.6.0: multiple listeners (response engine + router)
 
 	// Rate limiting: per-(pid, category) last alert time
 	rateLimit    time.Duration
@@ -272,9 +272,12 @@ func (am *AlertManager) emit(level Level, category string, pid uint32, format st
 	am.alerts = append(am.alerts, alert)
 	am.mu.Unlock()
 
-	// Fire callback for response engine (if registered)
-	if am.callback != nil {
-		go am.callback(alert)
+	// Fire callbacks (response engine, router, etc.) — each in its own
+	// goroutine so a slow listener can never stall detection.
+	for _, cb := range am.callbacks {
+		if cb != nil {
+			go cb(alert)
+		}
 	}
 }
 
@@ -303,8 +306,11 @@ func (am *AlertManager) Flush() {
 // GetAlerts returns recent alerts, optionally filtered by minimum level.
 // SetCallback registers a function called on every emitted alert.
 // Used by the response engine for Alert → Response pipeline.
+// v0.6.0: appends — multiple listeners can coexist (response engine + router).
 func (am *AlertManager) SetCallback(fn func(Alert)) {
-	am.callback = fn
+	am.mu.Lock()
+	defer am.mu.Unlock()
+	am.callbacks = append(am.callbacks, fn)
 }
 
 func (am *AlertManager) GetAlerts(minLevel Level) []Alert {

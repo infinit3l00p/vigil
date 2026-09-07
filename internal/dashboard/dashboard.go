@@ -136,6 +136,8 @@ func (d *Dashboard) Start(ctx context.Context) error {
 
 	// API endpoints
 	mux.HandleFunc("/api/status", d.handleStatus)
+	mux.HandleFunc("/metrics", d.handleMetrics) // v0.6.0: Prometheus
+	mux.HandleFunc("/api/rules", d.handleRules)  // v0.6.0: rules list/toggle API
 	mux.HandleFunc("/api/baseline", d.handleBaseline)
 	mux.HandleFunc("/api/alerts", d.handleAlerts)
 	mux.HandleFunc("/api/integrity", d.handleIntegrity)
@@ -726,3 +728,111 @@ func FormatAlerts(alerts []alert.Alert) []AlertJSON {
 
 // Ensure alert package has the right structure
 var _ = strings.Builder{}
+// ────────────────────────────────────────────────────────────────────────
+// v0.6.0: Prometheus /metrics + Rules API
+// ────────────────────────────────────────────────────────────────────────
+
+// handleMetrics serves Prometheus-format metrics at /metrics.
+// Every alert counter, detection module status, and process count —
+// ingestible by Prometheus/Grafana with zero glue.
+func (d *Dashboard) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+
+	var b strings.Builder
+	writeMetric := func(name, help, mtype string, value interface{}) {
+		fmt.Fprintf(&b, "# HELP %s %s\n# TYPE %s %s\n%s %v\n",
+			name, help, name, mtype, name, value)
+	}
+
+	// Alert counters by level
+	counts := d.alert.AlertCount()
+	writeMetric("vigil_alerts_total_critical",
+		"Total CRITICAL alerts in the alert buffer", "counter",
+		counts[alert.CRITICAL])
+	writeMetric("vigil_alerts_total_warn",
+		"Total WARN alerts in the alert buffer", "counter", counts[alert.WARN])
+	writeMetric("vigil_alerts_total_info",
+		"Total INFO alerts in the alert buffer", "counter", counts[alert.INFO])
+
+	// Detection module status (1 = active, 0 = inactive)
+	moduleStatus := func(name string, ok bool) {
+		v := 0
+		if ok {
+			v = 1
+		}
+		writeMetric("vigil_module_"+name, "Detection module active (1) or inactive (0)", "gauge", v)
+	}
+	if d.ebpfMgr != nil {
+		moduleStatus("ebpf", true)
+	}
+	if d.baseline != nil {
+		moduleStatus("baseline", true)
+	}
+	if d.crossView != nil {
+		moduleStatus("cross_view", true)
+	}
+	if d.syscallFilter != nil {
+		moduleStatus("syscall_filter", true)
+	}
+	if d.lineage != nil {
+		moduleStatus("lineage", true)
+	}
+	if d.bpfIntegrity != nil {
+		moduleStatus("bpf_integrity", true)
+	}
+	if d.dnsGuard != nil {
+		moduleStatus("dns_guard", true)
+	}
+	if d.ttyGuard != nil {
+		moduleStatus("tty_guard", true)
+	}
+	if d.containerGuard != nil {
+		moduleStatus("container_guard", true)
+	}
+	if d.flowGuard != nil {
+		moduleStatus("flow_guard", true)
+	}
+
+	// Uptime not tracked here yet — reserved for v0.6.1
+	_, _ = w.Write([]byte(b.String()))
+}
+
+// handleRules serves the syscall-arg rule set with runtime enable/disable.
+// GET /api/rules — list all rules (with enabled state)
+// POST /api/rules { "id": "...", "enabled": false } — toggle (persists to overrides)
+func (d *Dashboard) handleRules(w http.ResponseWriter, r *http.Request) {
+	if d.syscallFilter == nil {
+		http.Error(w, `{"error": "syscall filter not active"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		rules := d.syscallFilter.GetRules()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(rules)
+	case http.MethodPost:
+		var req struct {
+			ID      string `json:"id"`
+			Enabled *bool  `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, `{"error": "bad request"}`, http.StatusBadRequest)
+			return
+		}
+		if req.ID == "" || req.Enabled == nil {
+			http.Error(w, `{"error": "id and enabled required"}`, http.StatusBadRequest)
+			return
+		}
+		if err := d.syscallFilter.SetRuleEnabled(req.ID, *req.Enabled); err != nil {
+			http.Error(w, fmt.Sprintf(`{"error": "%s"}`, err.Error()), http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok": true, "id": req.ID, "enabled": *req.Enabled,
+		})
+	default:
+		http.Error(w, `{"error": "method not allowed"}`, http.StatusMethodNotAllowed)
+	}
+}

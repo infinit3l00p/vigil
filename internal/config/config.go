@@ -1,6 +1,7 @@
 package config
 
 import (
+	"github.com/vigil/edr/internal/alert"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -16,7 +17,13 @@ type Config struct {
 	MinShiftPercent   float64       `toml:"min_shift_percent"` // Minimum timing shift (%) for CRITICAL alerts
 	DashboardAddr     string        `toml:"dashboard_addr"`
 	AuthToken         string        `toml:"auth_token"`
-	AlertMaxEntries   int           `toml:"max_entries"`
+	Alert             AlertConfig   `toml:"alert"`
+}
+
+// AlertConfig configures the alert manager + routing (v0.6.0).
+type AlertConfig struct {
+	MaxEntries int                 `toml:"max_entries"` // in-memory alert buffer
+	Routing    alert.RoutingConfig `toml:"routing"`     // external destinations
 }
 
 // ModulesConfig controls which VIGIL modules are enabled.
@@ -53,8 +60,10 @@ func DefaultConfig() *Config {
 		SampleRate:        100,
 		ConsecutiveHits:   3,
 		MinShiftPercent:   50.0, // Require ≥50% shift for CRITICAL — rootkit hooks add 500μs+, not 2-3μs
-		DashboardAddr:     ":8443",
-		AlertMaxEntries:   1000,
+		DashboardAddr: ":8443",
+		Alert: AlertConfig{
+			MaxEntries: 1000,
+		},
 	}
 }
 
@@ -91,8 +100,8 @@ func Merge(base, overlay *Config) *Config {
 	if overlay.AuthToken != "" {
 		result.AuthToken = overlay.AuthToken
 	}
-	if overlay.AlertMaxEntries != 0 {
-		result.AlertMaxEntries = overlay.AlertMaxEntries
+	if overlay.Alert.MaxEntries != 0 {
+		result.Alert.MaxEntries = overlay.Alert.MaxEntries
 	}
 	return &result
 }

@@ -44,6 +44,28 @@ addr = ":8443"
 # Maximum alert entries to keep in memory
 max_entries = 1000
 
+# ── Alert Routing (v0.6.0) ─────────────────────────────────────────────
+# Fan alerts out to external destinations. All optional; empty = off.
+# Each route has its own minimum level: webhook=warn (default), chat apps=critical.
+[alert.routing]
+# Generic webhook: POSTs the alert as JSON (works with custom receivers)
+webhook_url = ""
+webhook_min_level = "warn"
+# Slack-compatible incoming webhook
+slack_webhook_url = ""
+slack_min_level = "critical"
+# Discord webhook
+discord_webhook_url = ""
+discord_min_level = "critical"
+# Telegram bot (token from @BotFather + chat ID from @userinfobot)
+telegram_bot_token = ""
+telegram_chat_id = ""
+telegram_min_level = "critical"
+# Structured event log (Suricata eve.json-style JSONL — tail-able by SIEMs)
+jsonl_path = "/var/log/vigil/alerts.jsonl"
+# HTTP timeout for external sends (seconds)
+send_timeout_sec = 5
+
 [syscall_arg_filter]
 # Syscall argument filter configuration
 # Allow known system processes to reduce noise

@@ -20,9 +20,11 @@ package syscallarg
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -168,6 +170,7 @@ type Rule struct {
 	ExcludeComms []string  `toml:"exclude_comms" json:"exclude_comms"` // Skip alert if comm matches any
 	Action      RuleAction `toml:"action" json:"action"`            // "allow", "alert", "deny"
 	Severity    string     `toml:"severity" json:"severity"`        // "info", "warn", "critical"
+	Enabled     bool       `toml:"-" json:"enabled"`                 // v0.6.0: runtime toggle (not TOML-parsed; defaults true via applyOverrides)
 }
 
 // matches checks if an ArgEvent matches this rule.
@@ -266,6 +269,9 @@ func NewSyscallArgFilter(cfg *config.Config, alrt *alert.AlertManager) *SyscallA
 			ByAction: make(map[string]int64),
 		},
 	}
+
+	// v0.6.0: apply persisted rule disable-states
+	saf.applyOverrides()
 
 	return saf
 }
@@ -705,13 +711,13 @@ func (saf *SyscallArgFilter) processEvent(event *ArgEvent) {
 	saf.stats.ByType[typeName]++
 	saf.statsMu.Unlock()
 
-	// Apply rules (first match wins)
+	// Apply rules (first match wins; disabled rules are skipped — v0.6.0)
 	saf.mu.RLock()
 	defer saf.mu.RUnlock()
 
 	matched := false
 	for _, rule := range saf.rules {
-		if rule.matches(event) {
+		if rule.Enabled && rule.matches(event) {
 			matched = true
 			saf.statsMu.Lock()
 			saf.stats.RuleMatches++
@@ -818,4 +824,73 @@ func (saf *SyscallArgFilter) GetRules() []Rule {
 	result := make([]Rule, len(saf.rules))
 	copy(result, saf.rules)
 	return result
+}
+
+// ── v0.6.0: runtime rule enable/disable with persistence ──────────────
+
+// overridesPath is where disabled rule IDs are persisted across restarts.
+const overridesPath = "/etc/vigil/rule_overrides.json"
+
+// SetRuleEnabled enables/disables a rule by ID at runtime.
+// The change persists to /etc/vigil/rule_overrides.json and survives restarts.
+func (saf *SyscallArgFilter) SetRuleEnabled(id string, enabled bool) error {
+	saf.mu.Lock()
+	defer saf.mu.Unlock()
+
+	found := false
+	for i := range saf.rules {
+		if saf.rules[i].ID == id {
+			saf.rules[i].Enabled = enabled
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("rule %q not found", id)
+	}
+
+	log.Printf("[VIGIL-SAF] rule %s %s (persisted)",
+		id, map[bool]string{true: "ENABLED", false: "DISABLED"}[enabled])
+
+	// Persist: the overrides file stores only DISABLED rule IDs (absence = enabled).
+	disabled := []string{}
+	for _, r := range saf.rules {
+		if !r.Enabled {
+			disabled = append(disabled, r.ID)
+		}
+	}
+	if err := os.MkdirAll("/etc/vigil", 0755); err != nil {
+		return err
+	}
+	data, _ := json.Marshal(map[string][]string{"disabled": disabled})
+	return os.WriteFile(overridesPath, data, 0640)
+}
+
+// applyOverrides loads persisted rule disable-states from disk and applies them.
+// Rules are enabled by default; the overrides file only lists disabled IDs.
+func (saf *SyscallArgFilter) applyOverrides() {
+	// default: all rules enabled
+	for i := range saf.rules {
+		saf.rules[i].Enabled = true
+	}
+
+	data, err := os.ReadFile(overridesPath)
+	if err != nil {
+		return // no overrides file = everything enabled (first boot)
+	}
+	var ovl map[string][]string
+	if err := json.Unmarshal(data, &ovl); err != nil {
+		log.Printf("[VIGIL-SAF] bad overrides file %s: %v", overridesPath, err)
+		return
+	}
+	disabledSet := make(map[string]bool)
+	for _, id := range ovl["disabled"] {
+		disabledSet[id] = true
+	}
+	for i := range saf.rules {
+		if disabledSet[saf.rules[i].ID] {
+			saf.rules[i].Enabled = false
+			log.Printf("[VIGIL-SAF] rule %s disabled (override)", saf.rules[i].ID)
+		}
+	}
 }
