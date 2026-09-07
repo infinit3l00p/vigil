@@ -4,6 +4,15 @@
 
 ![VIGIL EDR Dashboard](docs/screenshots/dashboard.png)
 
+## v0.8.0 — Fleet Mode, Email Routing, ARM64
+
+- **🛰️ Multi-host fleet mode** — one binary, two roles. Agents report status + alerts (gzip'd JSON, shared fleet token, 15-30s cadence) to a central collector; the dashboard's **Fleet tab** shows every agent's health, version, and recent alerts. `fleet.collector_enabled = true` on the collector, `fleet.collector_url` on each agent.
+- **✉️ Email/SMTP alert routing** — alerts by mail alongside webhook/Slack/Discord/Telegram/JSONL. STARTTLS (587, default) or implicit TLS (465), per-route minimum level. Use app passwords.
+- **📱 ARM64 support** — Raspberry Pi 5, ARM servers, AWS Graviton. `make arm64` cross-compiles the userspace binary (pure Go); `make bpf` on the ARM64 host builds the objects (vmlinux.h auto-regenerates). Syscall wrapper symbols (`__x64_sys_*` / `__arm64_sys_*`) resolve per-architecture everywhere.
+- **Dashboard auth** — token-gated API with `?token=` first-visit bootstrap (stored in localStorage), version exposed in `/api/status`.
+
+Also fixed: `alert.Level` JSON decoding, a startup panic when modules are disabled, and `data_dir`/`log_path` config fields (were hardcoded).
+
 ## v0.6.0 — Alert Routing, Prometheus Metrics, Rules UI
 
 - **Alert routing** — fan alerts to webhook, Slack, Discord, or Telegram with per-route severity levels, plus a Suricata-style JSONL event log for SIEM ingestion. Non-blocking: destinations can never stall detection.
